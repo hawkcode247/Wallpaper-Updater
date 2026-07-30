@@ -36,6 +36,7 @@ and boot login page. On schedule. Forever. Zero maintenance.
 
 ---
 
+<a id="features"></a>
 ## ✨ Features
 
 | | |
@@ -114,6 +115,7 @@ and boot login page. On schedule. Forever. Zero maintenance.
        └───────────────── systemd timers (2.5h / 4h) ────────────┘
 ```
 
+<a id="installation"></a>
 ## 🚀 Installation
 
 ### Quick start (copy / paste)
@@ -214,6 +216,7 @@ bash wallpaper-suite.sh reinstall              # all-in-one script
 bash spotlight.sh reinstall                    # component-level (wallpaper only)
 ```
 
+<a id="uninstall"></a>
 ## 🗑 Uninstall
 
 One command removes **everything** — timers, units, config, history, downloaded
@@ -242,6 +245,7 @@ The suite checks **only what your system actually needs** and offers to install 
 | `zenity` / `kdialog` / `yad` | GUI dialogs | optional (terminal fallback) |
 | `systemd` (user session) | timers | optional (cron line printed otherwise) |
 
+<a id="debugging"></a>
 ## 🐞 Debugging
 
 ```bash
@@ -263,6 +267,7 @@ Common issues:
 | Notification without buttons | your daemon lacks the `actions` capability → plain credit line is shown |
 | `OVER_RATE_LIMIT` from NASA | shared `DEMO_KEY` exhausted → get a free key: `NASA_API_KEY=xxx` |
 
+<a id="compatibility"></a>
 ## 🧩 Compatibility
 
 **Desktops:** GNOME · KDE Plasma · XFCE · Cinnamon · MATE · LXQt/LXDE · Budgie ·
