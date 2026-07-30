@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<defs><linearGradient id="bgn3" x1="0" y1="0" x2="0.7" y2="1">
+      <stop offset="0" stop-color="hsl(219,54%,10%)"/><stop offset="1" stop-color="hsl(255,56%,26%)"/></linearGradient>
+    <radialGradient id="gln3"><stop offset="0" stop-color="#fff"/>
+      <stop offset="0.35" stop-color="#a5b8ff" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#a5b8ff" stop-opacity="0"/></radialGradient>
+    <clipPath id="cpn3"><rect x="8" y="8" width="240" height="240" rx="56"/></clipPath><linearGradient id="trn3" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0" stop-color="#a5b8ff" stop-opacity="0"/><stop offset="1" stop-color="#fff"/></linearGradient></defs>
+<g clip-path="url(#cpn3)"><rect x="8" y="8" width="240" height="240" fill="url(#bgn3)"/><path d="M219 83 L221.1 87.9 L226 90 L221.1 92.1 L219 97 L216.9 92.1 L212 90 L216.9 87.9 Z" fill="white" opacity="0.33"/><path d="M120 42 L121.5 45.5 L125 47 L121.5 48.5 L120 52 L118.5 48.5 L115 47 L118.5 45.5 Z" fill="white" opacity="0.53"/><path d="M61 182 L62.5 185.5 L66 187 L62.5 188.5 L61 192 L59.5 188.5 L56 187 L59.5 185.5 Z" fill="white" opacity="0.7"/><line x1="174" y1="77" x2="87" y2="154" stroke="url(#trn3)" stroke-width="21" stroke-linecap="round"/><circle cx="174" cy="77" r="42" fill="url(#gln3)"/><circle cx="174" cy="77" r="14" fill="#fff"/><line x1="102" y1="148" x2="55" y2="191" stroke="url(#trn3)" stroke-width="12" stroke-linecap="round"/><circle cx="102" cy="148" r="23" fill="url(#gln3)"/><circle cx="102" cy="148" r="8" fill="#fff"/></g>
+<rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="rgba(255,255,255,0.14)" stroke-width="2"/>
+</svg>
