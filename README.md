@@ -362,8 +362,6 @@ re-embed them (base64) into the suite if you fork the project.
 
 If Wallpaper Suite saves you time, consider supporting development:
 
-[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=github&style=for-the-badge)](https://github.com/sponsors/hawkcode247)
-
 ⭐ **Starring the repo** helps others find it — and costs nothing!
 
 ## 🙏 Credits
