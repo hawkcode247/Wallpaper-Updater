@@ -81,7 +81,7 @@ SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 warn() { echo "lockscreen: $*" >&2; }
 confirm() { # confirm <question> -> 0 = yes
     [[ "$ASSUME_YES" == "1" ]] && return 0
-    [[ -t 0 ]] || return 0                     # non-interactive: proceed
+    [[ -t 0 ]] || return 0                       # non-interactive: proceed
     local a=""; read -rp "$1 [Y/n]: " a || a=""
     [[ ! "${a,,}" =~ ^n ]]
 }
