@@ -35,7 +35,11 @@ HISTORY_MAX=500   # keep the last N entries
 LOG_FILE="$SPOTLIGHT_PATH/wallpaper.log"
 LOG_BUFFER=""
 RUN_OK=0
-SOURCES=(spotlight bing nasa wallhaven picsum)
+CATEGORY="${WALLPAPER_CATEGORY:-default}"
+DEFAULT_SOURCES=(spotlight bing nasa wallhaven picsum)
+SCIENCE_SOURCES=(nasaimg wikisci ovsci nasa whtech)
+WILDLIFE_SOURCES=(inat wikifp ovwild wikiwild whwild)
+SOURCES=("${DEFAULT_SOURCES[@]}")
 SOURCE="${WALLPAPER_SOURCE:-random}"
 FALLBACK="${WALLPAPER_FALLBACK:-1}"
 SPOTLIGHT_API="https://fd.api.iris.microsoft.com/v4/api/selection?placement=88000820&fmt=json&locale=en-US&country=US"
@@ -65,6 +69,7 @@ EOF
 }
 DO_CLEAN=0
 DO_SETUP=0
+WAIT_NET=0
 DO_UNINSTALL=0
 DO_REINSTALL=0
 ASSUME_YES=0
@@ -78,18 +83,26 @@ while [[ $# -gt 0 ]]; do
         -y|--yes)       ASSUME_YES=1; shift ;;
         -s|--source)    SOURCE="${2:?--source requires a value}"; shift 2 ;;
         -n|--no-fallback) FALLBACK=0; shift ;;
+        -w|--wait-net)  WAIT_NET=1; shift ;;
         -l|--list)      printf '%s\n' "${SOURCES[@]}"; exit 0 ;;
         -h|--help)      usage; exit 0 ;;
         *)              echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
-if [[ "$SOURCE" == "random" ]]; then
-    SOURCE="${SOURCES[RANDOM % ${#SOURCES[@]}]}"
-fi
-case " ${SOURCES[*]} " in
-    *" $SOURCE "*) ;;
-    *) echo "Invalid source: $SOURCE" >&2; usage >&2; exit 1 ;;
-esac
+apply_category() {
+    case "$CATEGORY" in
+        science)  SOURCES=("${SCIENCE_SOURCES[@]}") ;;
+        wildlife) SOURCES=("${WILDLIFE_SOURCES[@]}") ;;
+        *)        CATEGORY=default; SOURCES=("${DEFAULT_SOURCES[@]}") ;;
+    esac
+    if [[ "$SOURCE" == "random" ]]; then
+        SOURCE="${SOURCES[RANDOM % ${#SOURCES[@]}]}"
+    fi
+    case " ${SOURCES[*]} ${DEFAULT_SOURCES[*]} ${SCIENCE_SOURCES[*]} ${WILDLIFE_SOURCES[*]} " in
+        *" $SOURCE "*) ;;
+        *) echo "Invalid source: $SOURCE" >&2; usage >&2; exit 1 ;;
+    esac
+}
 log() { # log <priority> <message> — buffered; written to own log file at exit
     local prio="$1"; shift
     LOG_BUFFER+="$(date '+%F %T') [$prio] $*"$'\n'
@@ -424,6 +437,7 @@ load_config() {
         case "$key" in
             ARCHIVE_ENABLED) [[ "$val" =~ ^[01]$ ]] && ARCHIVE_ENABLED="$val" ;;
             LIMIT_MB)        [[ "$val" =~ ^[0-9]+$ ]] && LIMIT_MB="$val" ;;
+            CATEGORY)        [[ "$val" =~ ^(default|science|wildlife)$ ]] && CATEGORY="$val" ;;
         esac
     done < "$CONFIG_FILE"
     return 0
@@ -434,6 +448,7 @@ save_config() {
 # Re-run the wizard anytime:  spotlight.sh setup
 ARCHIVE_ENABLED=$ARCHIVE_ENABLED
 LIMIT_MB=$LIMIT_MB
+CATEGORY=$CATEGORY
 EOF
 }
 setup_wizard() { # interactive; requires a terminal on stdin/stdout
@@ -444,6 +459,18 @@ setup_wizard() { # interactive; requires a terminal on stdin/stdout
     printf '\n'
     printf '  Previous wallpapers can be kept in %s\n' "$ARCHIVE_PATH"
     printf '  so you can reuse them later.\n\n'
+    printf '  Image category:\n'
+    printf '    1) Default        — Spotlight, Bing, NASA APOD, Wallhaven, Picsum\n'
+    printf '    2) Scientific     — NASA library, research & tech imagery\n'
+    printf '    3) Wildlife       — sanctuaries, animals & nature\n\n'
+    local catc=""
+    read -rp "  Choose [1/2/3, Enter = 1]: " catc || catc=""
+    case "$catc" in
+        2) CATEGORY=science ;;
+        3) CATEGORY=wildlife ;;
+        *) CATEGORY=default ;;
+    esac
+    printf '\n'
     local ans=""
     read -rp "  Save previous wallpapers? [Y/n]: " ans || ans=""
     case "${ans,,}" in
@@ -521,6 +548,7 @@ elif ! load_config; then
         save_config
     fi
 fi
+apply_category
 detect_screen_size() { # sets SCREEN_W, SCREEN_H
     SCREEN_W=0; SCREEN_H=0
     local out=""
@@ -717,6 +745,155 @@ fetch_picsum() {
     done
     fail "Picsum: no unseen image found" || return 1
 }
+
+SCI_QUERIES=("supercomputer" "quantum computer" "research laboratory" "particle accelerator" "space telescope" "mars rover" "robotics research" "data center" "microscope science" "satellite technology")
+WILD_QUERIES=("wildlife sanctuary" "national park wildlife" "bird sanctuary" "tiger reserve" "elephant herd" "forest wildlife" "safari animals" "nature reserve" "mountain wildlife" "wetland birds")
+rand_of(){ local -n _a=$1; echo "${_a[RANDOM % ${#_a[@]}]}"; }
+urlenc(){ printf '%s' "$1" | sed 's/ /%20/g'; }
+
+fetch_nasaimg() { # NASA Image & Video Library (images-api.nasa.gov)
+    local q r rows row nid t d cand
+    q="$(urlenc "$(rand_of SCI_QUERIES)")"
+    r="$(fetch "https://images-api.nasa.gov/search?q=$q&media_type=image&page_size=40")" \
+        || fail "NASA image library request failed" || return 1
+    mapfile -t rows < <(jq -r '.collection.items[] | [.data[0].nasa_id, .data[0].title, (.data[0].description // "")[:200]] | @tsv' <<< "$r" 2>/dev/null | shuf | head -12)
+    (( ${#rows[@]} > 0 )) || fail "NASA library: no results" || return 1
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r nid t d <<< "$row"
+        [[ -n "$nid" ]] || continue
+        cand="$(fetch "https://images-api.nasa.gov/asset/$nid" 2>/dev/null \
+            | jq -r '.collection.items[].href' 2>/dev/null | grep -Ei '~(orig|large)\.(jpg|jpeg|png)$' | head -1)"
+        cand="${cand/http:\/\//https:\/\/}"
+        [[ -n "$cand" ]] || continue
+        if ! seen_url "$cand"; then
+            imageUrl="$cand"; title="$t"; description="$d"
+            url="https://images.nasa.gov/details/$nid"
+            return 0
+        fi
+    done
+    fail "NASA library: no unseen image" || return 1
+}
+
+fetch_wiki_common() { # $1 = query
+    local q r rows row tu tw th pt du
+    q="$(urlenc "filetype:bitmap $1")"
+    r="$(fetch "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=$q&gsrnamespace=6&gsrlimit=30&prop=imageinfo&iiprop=url%7Csize&iiurlwidth=$REQ_W&format=json")" \
+        || fail "Wikimedia request failed" || return 1
+    mapfile -t rows < <(jq -r '.query.pages | to_entries[] | .value |
+        [(.imageinfo[0].thumburl // ""), (.imageinfo[0].thumbwidth // 0), (.imageinfo[0].thumbheight // 0),
+         (.title // "" | sub("^File:";"") | sub("\\.[a-zA-Z]+$";"")), (.imageinfo[0].descriptionurl // "")] | @tsv' <<< "$r" 2>/dev/null | shuf)
+    (( ${#rows[@]} > 0 )) || fail "Wikimedia: no results" || return 1
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r tu tw th pt du <<< "$row"
+        [[ -n "$tu" ]] || continue
+        (( tw >= MIN_WIDTH && th >= MIN_HEIGHT )) || continue
+        if ! seen_url "$tu"; then
+            imageUrl="$tu"; title="$pt"; description="From Wikimedia Commons"
+            url="$du"
+            return 0
+        fi
+    done
+    fail "Wikimedia: no unseen hi-res image" || return 1
+}
+fetch_wikisci()  { fetch_wiki_common "$(rand_of SCI_QUERIES)"; }
+fetch_wikiwild() { fetch_wiki_common "$(rand_of WILD_QUERIES)"; }
+
+fetch_ov_common() { # $1 = query (Openverse, keyless)
+    local q r rows row iu w h t cu
+    q="$(urlenc "$1")"
+    r="$(fetch "https://api.openverse.org/v1/images/?q=$q&page_size=20&size=large&license_type=commercial")" \
+        || fail "Openverse request failed" || return 1
+    mapfile -t rows < <(jq -r '.results[] | [(.url // ""), (.width // 0), (.height // 0), (.title // "Openverse image"), (.foreign_landing_url // "")] | @tsv' <<< "$r" 2>/dev/null | shuf)
+    (( ${#rows[@]} > 0 )) || fail "Openverse: no results" || return 1
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r iu w h t cu <<< "$row"
+        [[ -n "$iu" ]] || continue
+        (( w >= MIN_WIDTH && h >= MIN_HEIGHT )) || continue
+        if ! seen_url "$iu"; then
+            imageUrl="$iu"; title="$t"; description="Via Openverse"
+            url="$cu"
+            return 0
+        fi
+    done
+    fail "Openverse: no unseen hi-res image" || return 1
+}
+fetch_ovsci()  { fetch_ov_common "$(rand_of SCI_QUERIES)"; }
+fetch_ovwild() { fetch_ov_common "$(rand_of WILD_QUERIES)"; }
+
+WH_TECH_TERMS=(technology computer circuit server code cyberpunk laboratory space satellite robot)
+WH_WILD_TERMS=(wildlife animal bird tiger elephant forest deer wolf eagle safari)
+fetch_wh_common() { # $1 = query (Wallhaven search)
+    local q r rows row p wid wurl
+    q="$(urlenc "$1")"
+    r="$(fetch "https://wallhaven.cc/api/v1/search?q=$q&sorting=favorites&atleast=${MIN_WIDTH}x${MIN_HEIGHT}&ratios=landscape&purity=100&categories=101")" \
+        || fail "Wallhaven search failed" || return 1
+    mapfile -t rows < <(jq -r '.data[] | [.path, .id, .url] | @tsv' <<< "$r" 2>/dev/null | shuf)
+    (( ${#rows[@]} > 0 )) || fail "Wallhaven: no results" || return 1
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r p wid wurl <<< "$row"
+        [[ -n "$p" ]] || continue
+        if ! seen_url "$p"; then
+            imageUrl="$p"; title="Wallhaven $wid"; description="Curated $1 wallpaper"
+            url="$wurl"
+            return 0
+        fi
+    done
+    fail "Wallhaven: all results already used" || return 1
+}
+fetch_whtech() { fetch_wh_common "$(rand_of WH_TECH_TERMS)"; }
+fetch_whwild() { fetch_wh_common "$(rand_of WH_WILD_TERMS)"; }
+
+INAT_TAXA=(3 40151 26036 20978 47119)  # birds mammals reptiles amphibians arachnids->use 3/40151 mostly
+fetch_inat() { # iNaturalist research-grade wildlife photos
+    local taxon page r rows row pu w h t ou cand
+    taxon="${INAT_TAXA[RANDOM % ${#INAT_TAXA[@]}]}"
+    page=$((RANDOM % 5 + 1))
+    r="$(fetch "https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&per_page=50&page=$page&order_by=votes&taxon_id=$taxon&photo_license=cc0,cc-by,cc-by-nc")" \
+        || fail "iNaturalist request failed" || return 1
+    mapfile -t rows < <(jq -r '.results[] | select(.photos[0].original_dimensions != null) |
+        [(.photos[0].url // ""), (.photos[0].original_dimensions.width // 0), (.photos[0].original_dimensions.height // 0),
+         ((.taxon.preferred_common_name // .species_guess // "Wildlife") ), (.uri // "")] | @tsv' <<< "$r" 2>/dev/null | shuf)
+    (( ${#rows[@]} > 0 )) || fail "iNaturalist: no results" || return 1
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r pu w h t ou <<< "$row"
+        [[ -n "$pu" ]] || continue
+        (( w >= MIN_WIDTH && h >= MIN_HEIGHT )) || continue
+        cand="${pu/square/original}"
+        if ! seen_url "$cand"; then
+            imageUrl="$cand"; title="$t"; description="Research-grade wildlife photo via iNaturalist"
+            url="$ou"
+            return 0
+        fi
+    done
+    fail "iNaturalist: no unseen hi-res photo" || return 1
+}
+
+WIKIFP_CATS=("Featured pictures of animals" "Featured pictures of birds" "Featured pictures of mammals" "Quality images of animals" "Featured pictures of insects")
+fetch_wikifp() { # Wikimedia FEATURED pictures of wildlife (curated, hi-res)
+    local cat q r rows row tu tw th pt du
+    cat="$(rand_of WIKIFP_CATS)"
+    q="$(urlenc "Category:$cat")"
+    r="$(fetch "https://commons.wikimedia.org/w/api.php?action=query&generator=categorymembers&gcmtitle=$q&gcmtype=file&gcmlimit=50&prop=imageinfo&iiprop=url%7Csize&iiurlwidth=$REQ_W&format=json")" \
+        || fail "Wikimedia featured request failed" || return 1
+    mapfile -t rows < <(jq -r '.query.pages | to_entries[] | .value |
+        [(.imageinfo[0].thumburl // ""), (.imageinfo[0].thumbwidth // 0), (.imageinfo[0].thumbheight // 0),
+         (.title // "" | sub("^File:";"") | sub("\\.[a-zA-Z]+$";"")), (.imageinfo[0].descriptionurl // "")] | @tsv' <<< "$r" 2>/dev/null | shuf)
+    (( ${#rows[@]} > 0 )) || fail "Wikimedia featured: no results" || return 1
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r tu tw th pt du <<< "$row"
+        [[ -n "$tu" ]] || continue
+        (( tw >= MIN_WIDTH && th >= MIN_HEIGHT )) || continue
+        if ! seen_url "$tu"; then
+            imageUrl="$tu"; title="$pt"; description="Featured wildlife picture, Wikimedia Commons"
+            url="$du"
+            return 0
+        fi
+    done
+    fail "Wikimedia featured: no unseen landscape image" || return 1
+}
+
+
+
 try_source() { # try_source <name> — fetch metadata + download; 0 on success
     local src="$1"
     imageUrl="" title="" description="" url=""
@@ -765,6 +942,23 @@ try_source() { # try_source <name> — fetch metadata + download; 0 on success
     remember_image "$imageUrl" "$imagePath"
     return 0
 }
+net_ok() { # quick connectivity probe (any one succeeding = online)
+    if [[ "$HTTP_TOOL" == "curl" ]]; then
+        curl -fsI -m 5 https://www.bing.com >/dev/null 2>&1 && return 0
+        curl -fsI -m 5 https://picsum.photos >/dev/null 2>&1 && return 0
+    else
+        wget -q --spider -T 5 -t 1 https://www.bing.com >/dev/null 2>&1 && return 0
+        wget -q --spider -T 5 -t 1 https://picsum.photos >/dev/null 2>&1 && return 0
+    fi
+    ping -c1 -W2 8.8.8.8 >/dev/null 2>&1
+}
+if [[ "$WAIT_NET" == "1" ]] && ! net_ok; then
+    log info "No internet — waiting for connection (boot mode)"
+    [[ -t 1 ]] && echo "Waiting for internet connection..."
+    until net_ok; do sleep 10; done
+    log info "Internet detected — fetching wallpaper now"
+    [[ -t 1 ]] && echo "Internet detected — fetching wallpaper."
+fi
 attempt_order=("$SOURCE")
 if [[ "$FALLBACK" == "1" ]]; then
     remaining=()
