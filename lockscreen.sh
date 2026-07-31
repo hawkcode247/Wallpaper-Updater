@@ -60,11 +60,13 @@ EOF
 }
 CMD="next"
 ASSUME_YES=0
+WAIT_NET=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         next|install|reinstall|uninstall) CMD="$1"; shift ;;
         -s|--source)      SOURCE="${2:?--source needs a value}"; shift 2 ;;
         -n|--no-fallback) FALLBACK=0; shift ;;
+        -w|--wait-net)    WAIT_NET=1; shift ;;
         -y|--yes)         ASSUME_YES=1; shift ;;
         -h|--help)        usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -608,8 +610,23 @@ do_reinstall() {
     ASSUME_YES=$ASSUME_YES_SAVED
     do_install
 }
+net_ok() {
+    if [[ "$HTTP" == "curl" ]]; then
+        curl -fsI -m 5 https://www.bing.com >/dev/null 2>&1 && return 0
+        curl -fsI -m 5 https://picsum.photos >/dev/null 2>&1 && return 0
+    else
+        wget -q --spider -T 5 -t 1 https://www.bing.com >/dev/null 2>&1 && return 0
+        wget -q --spider -T 5 -t 1 https://picsum.photos >/dev/null 2>&1 && return 0
+    fi
+    ping -c1 -W2 8.8.8.8 >/dev/null 2>&1
+}
 run_update() {
     trap 'rm -f "$TMP_IMG"' EXIT
+    if [[ "$WAIT_NET" == "1" ]] && ! net_ok; then
+        warn "no internet — waiting for connection (boot mode)"
+        until net_ok; do sleep 10; done
+        warn "internet detected — updating lock screen now"
+    fi
     local order=("$SOURCE") rest=() s i j tmp
     if [[ "$FALLBACK" == "1" ]]; then
         for s in "${SOURCES[@]}"; do [[ "$s" != "$SOURCE" ]] && rest+=("$s"); done
