@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
+
 if (return 0 2>/dev/null); then
     echo "lockscreen.sh: run it, don't source it (./lockscreen.sh)" >&2
     return 1
 fi
+
 set -euo pipefail
+
 XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 XDG_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
+
 if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "${XDG_RUNTIME_DIR:-}" ]]; then
     XDG_RUNTIME="$XDG_RUNTIME_DIR"
 else
     XDG_RUNTIME="/tmp/lockscreen-$(id -u)"
     mkdir -p -m 700 "$XDG_RUNTIME" 2>/dev/null || XDG_RUNTIME="/tmp"
 fi
+
 APP_NAME="lockscreen"
 USER_IMG_DIR="$XDG_DATA/$APP_NAME"
 SYSTEM_IMG_DIR="${LOCKSCREEN_SYSTEM_DIR:-/usr/share/backgrounds}"
+
 have_system_greeter() {
     command -v gdm3 &>/dev/null || command -v gdm &>/dev/null || \
     command -v sddm &>/dev/null || command -v lightdm &>/dev/null || \
@@ -22,11 +28,13 @@ have_system_greeter() {
     [[ -d /etc/gdm3 || -d /etc/gdm || -f /etc/sddm.conf || -d /etc/sddm.conf.d \
        || -d /etc/lightdm || -f /etc/lxdm/lxdm.conf ]]
 }
+
 if [[ "$(id -u)" -eq 0 ]] || have_system_greeter; then
     IMG_DIR="$SYSTEM_IMG_DIR"
 else
     IMG_DIR="$USER_IMG_DIR"
 fi
+
 IMG_PATH="${LOCKSCREEN_IMAGE:-$IMG_DIR/$APP_NAME.jpg}"
 TMP_IMG="$(mktemp -u "$XDG_RUNTIME/$APP_NAME-XXXXXX.jpg")"
 USER_AGENT="WindowsShellClient/0"
@@ -36,11 +44,14 @@ MIN_HEIGHT="${LOCKSCREEN_MIN_HEIGHT:-}"
 SOURCES=(spotlight bing nasa wallhaven picsum)
 SOURCE="${LOCKSCREEN_SOURCE:-random}"
 FALLBACK="${LOCKSCREEN_FALLBACK:-1}"
+FORCE=0
+
 SPOTLIGHT_API="https://fd.api.iris.microsoft.com/v4/api/selection?placement=88000820&fmt=json&locale=en-US&country=US"
 BING_API="https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=en-US"
 NASA_API="https://api.nasa.gov/planetary/apod?api_key=${NASA_API_KEY:-DEMO_KEY}&thumbs=true"
 NASA_RANDOM_API="https://api.nasa.gov/planetary/apod?api_key=${NASA_API_KEY:-DEMO_KEY}&count=8&thumbs=true"
 PICSUM_LIST_API="https://picsum.photos/v2/list"
+
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [command] [options]
@@ -53,78 +64,90 @@ Commands:
 
 Options:
   -s, --source NAME   Pin a source: ${SOURCES[*]} | random
+  -f, --force         Force an update bypassing the boot/elapsed check
   -n, --no-fallback   Fail instead of trying other sources
+  -w, --wait-net      Wait for internet if offline
   -y, --yes           Assume "yes" on all prompts
   -h, --help          Show this help
 EOF
 }
+
 CMD="next"
 ASSUME_YES=0
 WAIT_NET=0
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         next|install|reinstall|uninstall) CMD="$1"; shift ;;
-        -s|--source)      SOURCE="${2:?--source needs a value}"; shift 2 ;;
+        -s|--source)    SOURCE="${2:?--source needs a value}"; shift 2 ;;
         -n|--no-fallback) FALLBACK=0; shift ;;
-        -w|--wait-net)    WAIT_NET=1; shift ;;
-        -y|--yes)         ASSUME_YES=1; shift ;;
-        -h|--help)        usage; exit 0 ;;
+        -w|--wait-net)  WAIT_NET=1; shift ;;
+        -f|--force)     FORCE=1; shift ;;
+        -y|--yes)       ASSUME_YES=1; shift ;;
+        -h|--help)      usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
+
 [[ "$SOURCE" == "random" ]] && SOURCE="${SOURCES[RANDOM % ${#SOURCES[@]}]}"
 case " ${SOURCES[*]} " in
     *" $SOURCE "*) ;;
     *) echo "Invalid source: $SOURCE" >&2; exit 1 ;;
 esac
+
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
 warn() { echo "lockscreen: $*" >&2; }
-confirm() { # confirm <question> -> 0 = yes
+
+confirm() {
     [[ "$ASSUME_YES" == "1" ]] && return 0
-    [[ -t 0 ]] || return 0                       # non-interactive: proceed
+    [[ -t 0 ]] || return 0
     local a=""; read -rp "$1 [Y/n]: " a || a=""
     [[ ! "${a,,}" =~ ^n ]]
 }
+
 as_root() {
-    if [[ "$(id -u)" -eq 0 ]]; then "$@"
+    if [[ "$(id -u)" -eq 0 ]]; then
+        "$@"
     elif command -v sudo &>/dev/null; then
         if [[ -t 0 ]]; then sudo "$@"
-        else sudo -n "$@" 2>/dev/null
-        fi
+        else sudo -n "$@" 2>/dev/null; fi
     elif command -v pkexec &>/dev/null && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
         pkexec "$@"
     else
         return 1
     fi
 }
+
 if [[ -f "$SCRIPT_PATH" && ! -x "$SCRIPT_PATH" ]]; then
     if [[ -t 0 && -t 1 ]]; then
         if confirm "  $(basename "$SCRIPT_PATH") is not executable. Add chmod +x now?"; then
-            chmod +x "$SCRIPT_PATH" 2>/dev/null \
-                && echo "  ✔ Execute permission added." \
-                || warn "could not chmod — try: sudo chmod +x $SCRIPT_PATH"
+            chmod +x "$SCRIPT_PATH" 2>/dev/null && echo "  ✔ Execute permission added." || \
+                warn "could not chmod — try: sudo chmod +x $SCRIPT_PATH"
         fi
     else
         chmod +x "$SCRIPT_PATH" 2>/dev/null || true
     fi
 fi
-detect_pkg_manager() { # sets PM, PM_INSTALL, PM_REFRESH
+
+detect_pkg_manager() {
     PM="" PM_INSTALL="" PM_REFRESH=""
-    if   command -v apt-get      &>/dev/null; then PM=apt;    PM_INSTALL="apt-get install -y";        PM_REFRESH="apt-get update -qq"
-    elif command -v dnf          &>/dev/null; then PM=dnf;    PM_INSTALL="dnf install -y"
-    elif command -v yum          &>/dev/null; then PM=yum;    PM_INSTALL="yum install -y"
-    elif command -v pacman       &>/dev/null; then PM=pacman; PM_INSTALL="pacman -S --noconfirm";     PM_REFRESH="pacman -Sy"
-    elif command -v zypper       &>/dev/null; then PM=zypper; PM_INSTALL="zypper install -y"
-    elif command -v apk          &>/dev/null; then PM=apk;    PM_INSTALL="apk add"
-    elif command -v xbps-install &>/dev/null; then PM=xbps;   PM_INSTALL="xbps-install -y";           PM_REFRESH="xbps-install -S"
-    elif command -v emerge       &>/dev/null; then PM=emerge; PM_INSTALL="emerge --quiet"
+    if   command -v apt-get      &>/dev/null; then PM=apt;       PM_INSTALL="apt-get install -y";        PM_REFRESH="apt-get update -qq"
+    elif command -v dnf          &>/dev/null; then PM=dnf;       PM_INSTALL="dnf install -y"
+    elif command -v yum          &>/dev/null; then PM=yum;       PM_INSTALL="yum install -y"
+    elif command -v pacman       &>/dev/null; then PM=pacman;    PM_INSTALL="pacman -S --noconfirm";     PM_REFRESH="pacman -Sy"
+    elif command -v zypper       &>/dev/null; then PM=zypper;    PM_INSTALL="zypper install -y"
+    elif command -v apk          &>/dev/null; then PM=apk;       PM_INSTALL="apk add"
+    elif command -v xbps-install &>/dev/null; then PM=xbps;      PM_INSTALL="xbps-install -y";           PM_REFRESH="xbps-install -S"
+    elif command -v emerge       &>/dev/null; then PM=emerge;    PM_INSTALL="emerge --quiet"
     fi
     [[ -n "$PM" ]]
 }
-pkg_name_for() { # pkg_name_for <tool> -> distro package name
+
+pkg_name_for() {
     local tool="$1"
     case "$tool" in
-        jq|wget|curl|wlr-randr) echo "$tool" ;;   # same name everywhere
+        jq|wget|curl|wlr-randr) echo "$tool" ;;
         identify)
             case "$PM" in
                 dnf|yum|zypper) echo "ImageMagick" ;;
@@ -133,50 +156,40 @@ pkg_name_for() { # pkg_name_for <tool> -> distro package name
         glib-compile-resources)
             case "$PM" in
                 apt)     echo "libglib2.0-dev-bin" ;;
-                dnf|yum) echo "glib2-devel" ;;
-                pacman)  echo "glib2-devel" ;;
-                zypper)  echo "glib2-devel" ;;
-                apk)     echo "glib-dev" ;;
-                *)       echo "glib2" ;;
+                *)       echo "glib2-devel" ;;
             esac ;;
         xrandr)
             case "$PM" in
-                apt)        echo "x11-xserver-utils" ;;
-                dnf|yum)    echo "xrandr" ;;
-                pacman)     echo "xorg-xrandr" ;;
-                zypper)     echo "xrandr" ;;
-                apk)        echo "xrandr" ;;
-                xbps)       echo "xrandr" ;;
-                emerge)     echo "x11-apps/xrandr" ;;
-                *)          echo "xrandr" ;;
+                apt)     echo "x11-xserver-utils" ;;
+                pacman)  echo "xorg-xrandr" ;;
+                *)       echo "xrandr" ;;
             esac ;;
         *) echo "$tool" ;;
     esac
 }
-collect_missing_deps() { # fills MISSING_REQUIRED[] and MISSING_OPTIONAL[]
+
+collect_missing_deps() {
     MISSING_REQUIRED=() MISSING_OPTIONAL=()
     command -v jq &>/dev/null || MISSING_REQUIRED+=(jq)
     if ! command -v wget &>/dev/null && ! command -v curl &>/dev/null; then
-        MISSING_REQUIRED+=(curl)          # install one downloader, curl is lightest
+        MISSING_REQUIRED+=(curl)
     fi
     if [[ -n "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-        command -v xrandr &>/dev/null || command -v xdpyinfo &>/dev/null \
-            || MISSING_OPTIONAL+=(xrandr)
+        command -v xrandr &>/dev/null || command -v xdpyinfo &>/dev/null || MISSING_OPTIONAL+=(xrandr)
     elif [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-        command -v wlr-randr &>/dev/null || command -v swaymsg &>/dev/null \
-            || command -v hyprctl &>/dev/null || command -v gsettings &>/dev/null \
-            || MISSING_OPTIONAL+=(wlr-randr)
+        command -v wlr-randr &>/dev/null || command -v swaymsg &>/dev/null || command -v hyprctl &>/dev/null || \
+            command -v gsettings &>/dev/null || MISSING_OPTIONAL+=(wlr-randr)
     fi
     if ! command -v identify &>/dev/null && ! command -v file &>/dev/null; then
         MISSING_OPTIONAL+=(identify)
     fi
-    if { command -v gdm3 &>/dev/null || command -v gdm &>/dev/null || \
-         [[ -d /etc/gdm3 || -d /etc/gdm ]]; } && \
+    if { command -v gdm3 &>/dev/null || command -v gdm &>/dev/null || [[ -d /etc/gdm3 || -d /etc/gdm ]]; } && \
        { ! command -v gresource &>/dev/null || ! command -v glib-compile-resources &>/dev/null; }; then
         MISSING_OPTIONAL+=(glib-compile-resources)
     fi
 }
-install_deps() { # install_deps <tool...> -> 0 if all installed
+
+install_deps() {
     local tools=("$@") pkgs=() t
     for t in "${tools[@]}"; do pkgs+=("$(pkg_name_for "$t")"); done
     echo "  Installing via $PM: ${pkgs[*]}"
@@ -189,6 +202,7 @@ install_deps() { # install_deps <tool...> -> 0 if all installed
     done
     return 0
 }
+
 ensure_dependencies() {
     collect_missing_deps
     [[ ${#MISSING_REQUIRED[@]} -eq 0 && ${#MISSING_OPTIONAL[@]} -eq 0 ]] && return 0
@@ -216,43 +230,59 @@ ensure_dependencies() {
         echo "  Recommended for this system: ${MISSING_OPTIONAL[*]}"
         echo "  (screen-size detection / image validation — script works without them)"
         if confirm "  Install recommended tools too?"; then
-            install_deps "${MISSING_OPTIONAL[@]}" \
-                || warn "optional tools not installed — continuing with fallbacks"
+            install_deps "${MISSING_OPTIONAL[@]}" || warn "optional tools not installed — continuing with fallbacks"
         fi
     fi
 }
+
 ensure_dependencies
+
 if   command -v wget &>/dev/null; then HTTP=wget
 elif command -v curl &>/dev/null; then HTTP=curl
-else echo "Missing dependency: wget or curl" >&2; exit 1
-fi
-fetch() { # fetch <url>
-    if [[ "$HTTP" == wget ]]; then
+else echo "Missing dependency: wget or curl" >&2; exit 1; fi
+
+fetch() {
+    if [[ "$HTTP" == "wget" ]]; then
         wget -qO- -U "$USER_AGENT" --timeout=15 --tries=2 "$1"
     else
         curl -fsSL -A "$USER_AGENT" --max-time 15 --retry 1 "$1"
     fi
 }
-download() { # download <url> <out>
-    if [[ "$HTTP" == wget ]]; then
-        wget -qO "$2" -U "$USER_AGENT" --timeout=30 --tries=2 "$1"
+
+download() {
+    if [[ "$HTTP" == "wget" ]]; then
+        if [[ -t 1 ]]; then
+            wget --show-progress -O "$2" -U "$USER_AGENT" --timeout=30 --tries=2 "$1"
+        else
+            wget -qO "$2" -U "$USER_AGENT" --timeout=30 --tries=2 "$1"
+        fi
     else
-        curl -fsSL -A "$USER_AGENT" --max-time 60 --retry 1 -o "$2" "$1"
+        if [[ -t 1 ]]; then
+            curl -L -# -A "$USER_AGENT" --max-time 60 --retry 1 -o "$2" "$1"
+        else
+            curl -fsSL -A "$USER_AGENT" --max-time 60 --retry 1 -o "$2" "$1"
+        fi
     fi
 }
+
 if command -v flock &>/dev/null; then
     exec 9>"$LOCK_FILE" || true
     flock -n 9 || { warn "another run is in progress — skipping"; exit 0; }
 fi
-detect_screen_size() { # sets SCREEN_W SCREEN_H
+
+detect_screen_size() {
     SCREEN_W=0; SCREEN_H=0
     local out=""
     if [[ -n "${DISPLAY:-}" ]] && command -v xrandr &>/dev/null; then
         out="$(xrandr --current 2>/dev/null | sed -n 's/.* connected.* \([0-9]\+\)x\([0-9]\+\)+.*/\1 \2/p' | sort -rn | head -1)"
         [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
+    if (( SCREEN_W == 0 )) && [[ -n "${DISPLAY:-}" ]] && command -v xdpyinfo &>/dev/null; then
+        out="$(xdpyinfo 2>/dev/null | sed -n 's/.*dimensions:[[:space:]]*\([0-9]\+\)x\([0-9]\+\) pixels.*/\1 \2/p' | head -1)"
+        [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
+    fi
     if (( SCREEN_W == 0 )) && [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wlr-randr &>/dev/null; then
-        out="$(wlr-randr 2>/dev/null | sed -n 's/^[[:space:]]*\([0-9]\+\)x\([0-9]\+\).*current.*/\1 \2/p' | sort -rn | head -1)"
+        out="$(wlr-randr 2>/dev/null | sed -n 's/^[[:space:]]*\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p' | sort -rn | head -1)"
         [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
     if (( SCREEN_W == 0 )) && command -v swaymsg &>/dev/null; then
@@ -261,7 +291,7 @@ detect_screen_size() { # sets SCREEN_W SCREEN_H
     fi
     if (( SCREEN_W == 0 )) && command -v hyprctl &>/dev/null; then
         out="$(hyprctl monitors -j 2>/dev/null | jq -r '.[0]|"\(.width) \(.height)"' 2>/dev/null)"
-        [[ "$out" =~ ^[0-9]+\ [0-9]+$ ]] && read -r SCREEN_W SCREEN_H <<< "$out"
+        [[ "$out" =~ ^[0-9]+[[:space:]]+[0-9]+$ ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
     if (( SCREEN_W == 0 )); then
         local f
@@ -273,59 +303,70 @@ detect_screen_size() { # sets SCREEN_W SCREEN_H
     fi
     (( SCREEN_W >= 640 && SCREEN_H >= 480 )) || { SCREEN_W=1920; SCREEN_H=1080; }
 }
+
 detect_screen_size
+
 REQ_W=$(( SCREEN_W > 3840 ? SCREEN_W : 3840 ))
 REQ_H=$(( SCREEN_H > 2160 ? SCREEN_H : 2160 ))
-[[ -z "$MIN_WIDTH"  ]] && MIN_WIDTH=$((  SCREEN_W < 1280 ? 1280 : SCREEN_W ))
+[[ -z "$MIN_WIDTH" ]] && MIN_WIDTH=$(( SCREEN_W < 1280 ? 1280 : SCREEN_W ))
 [[ -z "$MIN_HEIGHT" ]] && MIN_HEIGHT=$(( SCREEN_H < 720  ? 720  : SCREEN_H ))
 WALLHAVEN_API="https://wallhaven.cc/api/v1/search?sorting=toplist&topRange=1d&atleast=${MIN_WIDTH}x${MIN_HEIGHT}&ratios=landscape&purity=100&categories=101"
-image_resolution() { # <file> -> WxH or empty
+
+image_resolution() {
     local res=""
-    command -v identify &>/dev/null && res="$(identify -format '%wx%h' "$1[0]" 2>/dev/null || true)"
+    command -v identify &>/dev/null && res="$(identify -format '%wx%h' "${1}[0]" 2>/dev/null || true)"
     [[ -z "$res" ]] && command -v file &>/dev/null && \
         res="$(file "$1" | grep -oE '[0-9]{2,5} ?x ?[0-9]{2,5}' | head -1 | tr -d ' ' || true)"
     printf '%s' "$res"
 }
+
 meets_min_resolution() {
     local res; res="$(image_resolution "$1")"
     [[ "$res" =~ ^([0-9]+)x([0-9]+)$ ]] || return 0
     (( BASH_REMATCH[1] >= MIN_WIDTH && BASH_REMATCH[2] >= MIN_HEIGHT ))
 }
+
 fetch_spotlight() {
     local r; r="$(fetch "$SPOTLIGHT_API")" || return 1
     imageUrl="$(jq -r '.ad.landscapeImage.asset // empty' <<< "$r")"
     [[ -n "$imageUrl" ]]
 }
+
 fetch_bing() {
     local r u; r="$(fetch "$BING_API")" || return 1
     u="$(jq -r '.images[0].urlbase // empty' <<< "$r")"
     [[ -n "$u" ]] && imageUrl="https://www.bing.com${u}_UHD.jpg"
     [[ -n "$imageUrl" ]]
 }
+
 fetch_nasa() {
-    local r; r="$(fetch "$NASA_API")" || r=""
-    imageUrl="$(jq -r 'select(.media_type=="image") | .hdurl // .url // empty' <<< "$r" 2>/dev/null || true)"
+    local r
+    r="$(fetch "$NASA_API")" || r=""
+    imageUrl="$(jq -r 'select(.media_type=="image") | (.hdurl // .url // empty)' <<< "$r" 2>/dev/null || true)"
     if [[ -z "$imageUrl" ]]; then
         r="$(fetch "$NASA_RANDOM_API")" || return 1
-        imageUrl="$(jq -r '[.[]|select(.media_type=="image")][0] | .hdurl // .url // empty' <<< "$r" 2>/dev/null || true)"
+        imageUrl="$(jq -r '.[] | select(.media_type=="image") | (.hdurl // .url // empty)' <<< "$r" 2>/dev/null | head -1 || true)"
     fi
     [[ -n "$imageUrl" ]]
 }
+
 fetch_wallhaven() {
     local r; r="$(fetch "$WALLHAVEN_API")" || return 1
-    imageUrl="$(jq -r '.data | if length>0 then .[('"$RANDOM"' % length)].path else empty end' <<< "$r" 2>/dev/null || true)"
+    imageUrl="$(jq -r '.data | if length>0 then .[("'$RANDOM'" % length)].path else empty end' <<< "$r" 2>/dev/null || true)"
     [[ -n "$imageUrl" ]]
 }
+
 fetch_picsum() {
     local page r id
     page=$((RANDOM % 10 + 1))
     r="$(fetch "$PICSUM_LIST_API?page=$page&limit=100")" || return 1
     id="$(jq -r --argjson mw "$MIN_WIDTH" --argjson mh "$MIN_HEIGHT" \
-        '[.[]|select(.width>=$mw and .height>=$mh).id] | if length>0 then .[('"$RANDOM"' % length)] else empty end' <<< "$r" 2>/dev/null || true)"
+        '.[]|select(.width>=$mw and .height>=$mh).id' <<< "$r" 2>/dev/null | shuf | head -1)"
     [[ -n "$id" ]] && imageUrl="https://picsum.photos/id/$id/$REQ_W/$REQ_H"
     [[ -n "$imageUrl" ]]
 }
-try_source() { # <name> -> downloaded valid image at $TMP_IMG
+
+try_source() {
     local src="$1"; imageUrl=""
     "fetch_$src" 2>/dev/null || { warn "source '$src' failed"; return 1; }
     [[ "$imageUrl" =~ ^https?:// ]] || { warn "rejected non-http URL ($src)"; return 1; }
@@ -337,11 +378,11 @@ try_source() { # <name> -> downloaded valid image at $TMP_IMG
     }
     return 0
 }
+
 find_gdm_gresource() {
     local c
     if command -v update-alternatives &>/dev/null; then
-        c="$(update-alternatives --query gdm-theme.gresource 2>/dev/null \
-             | sed -n 's/^Value: //p')"
+        c="$(update-alternatives --query gdm-theme.gresource 2>/dev/null | sed -n 's/^Value: //p')"
         [[ -n "$c" && -f "$c" ]] && { echo "$c"; return 0; }
     fi
     for c in /usr/share/gnome-shell/gdm-theme.gresource \
@@ -353,13 +394,13 @@ find_gdm_gresource() {
     done
     return 1
 }
-apply_gdm() { # apply_gdm <image> -> 0 on success
+
+apply_gdm() {
     local img="$1" gres workdir themedir res xml css
     command -v gresource &>/dev/null || return 1
     command -v glib-compile-resources &>/dev/null || return 1
     gres="$(find_gdm_gresource)" || return 1
-    if gresource extract "$gres" /org/gnome/shell/theme/gnome-shell.css 2>/dev/null \
-        | grep -qF "file://$img"; then
+    if gresource extract "$gres" /org/gnome/shell/theme/gnome-shell.css 2>/dev/null | grep -qF "file://$img"; then
         return 0
     fi
     workdir="$(mktemp -d "${TMPDIR:-/tmp}/$APP_NAME-gdm.XXXXXX")" || return 1
@@ -370,8 +411,7 @@ apply_gdm() { # apply_gdm <image> -> 0 on success
     while IFS= read -r res; do
         local rel="${res#/org/gnome/shell/theme/}"
         mkdir -p "$themedir/$(dirname "$rel")"
-        gresource extract "$base" "$res" > "$themedir/$rel" 2>/dev/null || {
-            rm -rf "$workdir"; return 1; }
+        gresource extract "$base" "$res" > "$themedir/$rel" 2>/dev/null || { rm -rf "$workdir"; return 1; }
     done < <(gresource list "$base" 2>/dev/null)
     if ! ls "$themedir"/gnome-shell*.css &>/dev/null; then
         rm -rf "$workdir"; return 1
@@ -392,14 +432,13 @@ CSSEOF
     xml="$themedir/theme.gresource.xml"
     {
         echo '<?xml version="1.0" encoding="UTF-8"?>'
-        echo '<gresources><gresource prefix="/org/gnome/shell/theme">'
-        ( cd "$themedir" && find . -type f ! -name 'theme.gresource.xml' -printf '%P\n' ) |
+        echo '<resources><gresource prefix="/org/gnome/shell/theme">'
+        ( cd "$themedir" && find . -type f ! -name 'theme.gresource.xml' -printf '%P\n' ) | \
             while IFS= read -r f; do printf '    <file>%s</file>\n' "$f"; done
-        echo '</gresource></gresources>'
+        echo '</gresource></resources>'
     } > "$xml"
     ( cd "$themedir" && glib-compile-resources theme.gresource.xml \
-        --target="$workdir/new.gresource" --sourcedir=. ) 2>/dev/null || {
-        rm -rf "$workdir"; return 1; }
+        --target="$workdir/new.gresource" --sourcedir=. ) 2>/dev/null || { rm -rf "$workdir"; return 1; }
     as_root bash -c "
         [[ -f '$gres.orig' ]] || cp -a '$gres' '$gres.orig'
         install -m 644 '$workdir/new.gresource' '$gres'
@@ -407,13 +446,15 @@ CSSEOF
     rm -rf "$workdir"
     return 0
 }
-restore_gdm() { # uninstall: put the pristine theme back
+
+restore_gdm() {
     local gres
     gres="$(find_gdm_gresource)" || return 0
     [[ -f "$gres.orig" ]] || return 0
     as_root bash -c "mv -f '$gres.orig' '$gres'" 2>/dev/null || true
 }
-apply_lockscreen() { # <image path> -> 0 if at least one mechanism applied
+
+apply_lockscreen() {
     local img="$1"
     local ok=1
     local uri="file://$img"
@@ -438,8 +479,8 @@ apply_lockscreen() { # <image path> -> 0 if at least one mechanism applied
         mkdir -p "$sdir" 2>/dev/null || true
         if [[ -w "$sdir" || ! -e "$sdir/config" ]]; then
             if [[ ! -f "$sdir/config" ]] || grep -q "^image=" "$sdir/config" 2>/dev/null; then
-                sed -i "s|^image=.*|image=$img|" "$sdir/config" 2>/dev/null \
-                    || echo "image=$img" > "$sdir/config" 2>/dev/null || true
+                sed -i "s|^image=.*|image=$img|" "$sdir/config" 2>/dev/null || \
+                    echo "image=$img" > "$sdir/config" 2>/dev/null || true
                 grep -q "^image=" "$sdir/config" 2>/dev/null || echo "image=$img" >> "$sdir/config"
                 ok=0
             else
@@ -466,8 +507,8 @@ apply_lockscreen() { # <image path> -> 0 if at least one mechanism applied
                 if as_root bash -c "
                     mkdir -p /etc/lightdm
                     conf='/etc/lightdm/$gconf'
-                    [[ -f \"\$conf\" ]] || printf '[%s]\n' '$gsec' > \"\$conf\"
-                    grep -q '^\[$gsec\]' \"\$conf\" || printf '\n[%s]\n' '$gsec' >> \"\$conf\"
+                    [[ -f \"\$conf\" ]] || printf '[$gsec]\n' > \"\$conf\"
+                    grep -q '^\[$gsec\]' \"\$conf\" || printf '\n[$gsec]\n' >> \"\$conf\"
                     if grep -q '^background=' \"\$conf\"; then
                         sed -i 's|^background=.*|background=$img|' \"\$conf\"
                     else
@@ -515,22 +556,24 @@ apply_lockscreen() { # <image path> -> 0 if at least one mechanism applied
         fi
     fi
     if [[ -d /etc/sddm.conf.d || -f /etc/sddm.conf ]] || command -v sddm &>/dev/null; then
-        as_root bash -c '
-            theme_dir=$(grep -rhs "^Current=" /etc/sddm.conf.d /etc/sddm.conf 2>/dev/null | head -1 | cut -d= -f2)
-            [[ -n "$theme_dir" ]] || exit 1
-            t="/usr/share/sddm/themes/$theme_dir"
-            [[ -d "$t" ]] || exit 1
-            o="$t/theme.conf.user"
-            if [[ -f "$o" ]] && grep -q "^background='"$img"'$" "$o"; then exit 0; fi
-            if [[ -f "$o" ]] && grep -q "^background=" "$o"; then
-                sed -i "s|^background=.*|background='"$img"'|" "$o"
-            elif [[ -f "$o" ]]; then
-                grep -q "^\[General\]" "$o" || printf "[General]\n" >> "$o"
-                printf "background='"$img"'\n" >> "$o"
+        if as_root bash -c "
+            theme_dir=\$(grep -rhs '^Current=' /etc/sddm.conf.d /etc/sddm.conf 2>/dev/null | head -1 | cut -d= -f2)
+            [[ -n \"\$theme_dir\" ]] || exit 1
+            t=\"/usr/share/sddm/themes/\$theme_dir\"
+            [[ -d \"\$t\" ]] || exit 1
+            o=\"\$t/theme.conf.user\"
+            if [[ -f \"\$o\" ]] && grep -qF 'background=' \"\$o\" && grep -qF \"background='$img'\" \"\$o\"; then exit 0; fi
+            if [[ -f \"\$o\" ]] && grep -q '^background=' \"\$o\"; then
+                sed -i \"s|^background=.*|background='$img'|\" \"\$o\"
+            elif [[ -f \"\$o\" ]]; then
+                grep -q '^\\[General\\]' \"\$o\" || printf '[General]\n' >> \"\$o\"
+                printf \"background='%s'\\n\" '$img' >> \"\$o\"
             else
-                printf "[General]\nbackground='"$img"'\n" > "$o"
+                printf '[General]\nbackground=%s\n' \"'$img'\" > \"\$o\"
             fi
-        ' 2>/dev/null && ok=0 || true
+        " 2>/dev/null; then
+            ok=0
+        fi
     fi
     if command -v gsettings &>/dev/null; then
         gsettings set io.elementary.desktop.screensaver picture-uri "$uri" 2>/dev/null && ok=0 || true
@@ -540,7 +583,9 @@ apply_lockscreen() { # <image path> -> 0 if at least one mechanism applied
     fi
     return $ok
 }
+
 SYSTEMD_USER_DIR="$XDG_CONFIG/systemd/user"
+
 do_install() {
     printf '\n  Lock-screen Updater — Install\n\n'
     printf '  Image will live at:  %s\n' "$IMG_PATH"
@@ -553,6 +598,7 @@ do_install() {
             cat > "$SYSTEMD_USER_DIR/$APP_NAME.service" <<EOF
 [Unit]
 Description=Update lock-screen image
+
 [Service]
 Type=oneshot
 ExecStart=$SCRIPT_PATH next
@@ -560,10 +606,12 @@ EOF
             cat > "$SYSTEMD_USER_DIR/$APP_NAME.timer" <<EOF
 [Unit]
 Description=Update lock-screen image periodically
+
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=6h
 Persistent=true
+
 [Install]
 WantedBy=timers.target
 EOF
@@ -573,12 +621,13 @@ EOF
                 || warn "could not enable timer (enable later: systemctl --user enable --now $APP_NAME.timer)"
         fi
     else
-        echo "  ℹ systemd user session not available — add a cron entry instead:"
+        echo "  ⚠ systemd user session not available — add a cron entry instead:"
         echo "      0 */6 * * * $SCRIPT_PATH next"
     fi
     echo "  ✔ Install done — fetching first lock-screen image..."
     run_update
 }
+
 do_uninstall() {
     printf '\n  Lock-screen Updater — Uninstall\n'
     printf '  Removes: image (%s),\n           timer units, swaylock/hyprlock entries it created.\n\n' "$IMG_PATH"
@@ -593,11 +642,12 @@ do_uninstall() {
     rmdir "$USER_IMG_DIR" 2>/dev/null || true
     rm -f "$LOCK_FILE" 2>/dev/null || true
     if [[ -f "$XDG_CONFIG/swaylock/config" ]] && grep -qF "image=$IMG_PATH" "$XDG_CONFIG/swaylock/config" 2>/dev/null; then
-        sed -i "\|^image=$IMG_PATH\$|d" "$XDG_CONFIG/swaylock/config" 2>/dev/null || true
+        sed -i "\|image=$IMG_PATH|d" "$XDG_CONFIG/swaylock/config" 2>/dev/null || true
     fi
     echo "  ✔ Uninstalled. (Script file kept: $SCRIPT_PATH)"
     exit 0
 }
+
 do_reinstall() {
     ASSUME_YES_SAVED=$ASSUME_YES
     printf '\n  Lock-screen Updater — Reinstall\n\n'
@@ -610,6 +660,7 @@ do_reinstall() {
     ASSUME_YES=$ASSUME_YES_SAVED
     do_install
 }
+
 net_ok() {
     if [[ "$HTTP" == "curl" ]]; then
         curl -fsI -m 5 https://www.bing.com >/dev/null 2>&1 && return 0
@@ -620,18 +671,42 @@ net_ok() {
     fi
     ping -c1 -W2 8.8.8.8 >/dev/null 2>&1
 }
+
 run_update() {
     trap 'rm -f "$TMP_IMG"' EXIT
     if [[ "$WAIT_NET" == "1" ]] && ! net_ok; then
-        warn "no internet — waiting for connection (boot mode)"
+        warn "no internet — waiting for connection"
         until net_ok; do sleep 10; done
         warn "internet detected — updating lock screen now"
+    fi
+    # Real detection logic for bootup/updates:
+    # If system has just booted up (uptime < 5 minutes), we ALWAYS bypass elapsed limit and change it!
+    uptime_sec=99999
+    [[ -f /proc/uptime ]] && uptime_sec="$(cut -d. -f1 /proc/uptime)"
+    if (( uptime_sec < 300 )); then
+        FORCE=1
+    fi
+    LAST_CHANGE_FILE="$USER_IMG_DIR/last_change"
+    INTERVAL_LIMIT=14400 # 4 hours in seconds
+    if [[ "$FORCE" == "0" && -f "$LAST_CHANGE_FILE" && -f "$IMG_PATH" ]]; then
+        last_time="$(cat "$LAST_CHANGE_FILE" 2>/dev/null || echo 0)"
+        if [[ "$last_time" =~ ^[0-9]+$ ]]; then
+            now="$(date +%s)"
+            elapsed=$(( now - last_time ))
+            if (( elapsed < INTERVAL_LIMIT && elapsed >= 0 )); then
+                warn "Interval not elapsed yet (${elapsed}s / ${INTERVAL_LIMIT}s). Re-applying current lockscreen image."
+                if apply_lockscreen "$IMG_PATH"; then
+                    exit 0
+                fi
+            fi
+        fi
     fi
     local order=("$SOURCE") rest=() s i j tmp
     if [[ "$FALLBACK" == "1" ]]; then
         for s in "${SOURCES[@]}"; do [[ "$s" != "$SOURCE" ]] && rest+=("$s"); done
         for ((i=${#rest[@]}-1; i>0; i--)); do
-            j=$((RANDOM % (i+1))); tmp="${rest[i]}"; rest[i]="${rest[j]}"; rest[j]="$tmp"
+            j=$((RANDOM % (i+1)))
+            tmp="${rest[i]}"; rest[i]="${rest[j]}"; rest[j]="$tmp"
         done
         order+=("${rest[@]}")
     fi
@@ -643,17 +718,11 @@ run_update() {
     mkdir -p "$IMG_DIR" 2>/dev/null || as_root mkdir -p "$IMG_DIR" || {
         echo "Cannot create $IMG_DIR" >&2; exit 1; }
     if [[ ! -e "$IMG_PATH" && -w "$IMG_DIR" ]]; then
-        if command -v install &>/dev/null; then
-            install -m 644 "$TMP_IMG" "$IMG_PATH"
-        else
-            cp "$TMP_IMG" "$IMG_PATH" && chmod 644 "$IMG_PATH"
-        fi
+        if command -v install &>/dev/null; then install -m 644 "$TMP_IMG" "$IMG_PATH"
+        else cp "$TMP_IMG" "$IMG_PATH" && chmod 644 "$IMG_PATH"; fi
     elif [[ -e "$IMG_PATH" && -w "$IMG_PATH" && -w "$IMG_DIR" ]]; then
-        if command -v install &>/dev/null; then
-            install -m 644 "$TMP_IMG" "$IMG_PATH"
-        else
-            cp "$TMP_IMG" "$IMG_PATH.new" && chmod 644 "$IMG_PATH.new" && mv -f "$IMG_PATH.new" "$IMG_PATH"
-        fi
+        if command -v install &>/dev/null; then install -m 644 "$TMP_IMG" "$IMG_PATH"
+        else cp "$TMP_IMG" "$IMG_PATH.new" && chmod 644 "$IMG_PATH.new" && mv -f "$IMG_PATH.new" "$IMG_PATH"; fi
     elif [[ -e "$IMG_PATH" && -w "$IMG_PATH" ]]; then
         cp "$TMP_IMG" "$IMG_PATH"
     else
@@ -662,10 +731,13 @@ run_update() {
             echo "Cannot write $IMG_PATH (permission denied)" >&2; exit 1; }
     fi
     rm -f "$TMP_IMG"
-    apply_lockscreen "$IMG_PATH" \
-        || warn "no known lock-screen mechanism found — image is ready at $IMG_PATH"
+    apply_lockscreen "$IMG_PATH" || warn "no known lock-screen mechanism found — image is ready at $IMG_PATH"
     echo "Lock screen updated [$used]: $IMG_PATH ($(image_resolution "$IMG_PATH"))"
+    # Record successful update time
+    date +%s > "$LAST_CHANGE_FILE" 2>/dev/null || true
+    systemctl --user restart lockscreen.timer spotlight.timer 2>/dev/null || true
 }
+
 case "$CMD" in
     install)   do_install ;;
     uninstall) do_uninstall ;;
