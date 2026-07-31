@@ -6,7 +6,7 @@
 
 **Automatic wallpaper & lock-screen image rotation for every Linux desktop.**
 
-Fresh, high-quality images from 5 different APIs — applied to your desktop, lock screen
+Fresh, high-quality images from free APIs — applied to your desktop, lock screen
 and boot login page. On schedule. Forever. Zero maintenance.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/hawkcode247/Wallpaper-Updater/blob/main/LICENSE)
@@ -15,7 +15,7 @@ and boot login page. On schedule. Forever. Zero maintenance.
 [![Platform](https://img.shields.io/badge/Platform-Linux%20(X11%20%26%20Wayland)-orange?logo=linux)](#compatibility)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/hawkcode247/Wallpaper-Updater/blob/main/CONTRIBUTING.md)
 
-[Install](#installation) · [Features](#features) · [Compatibility](#compatibility) ·
+[Install](#installation) · [Features](#features) · [Structure](#structure) · [Compatibility](#compatibility) ·
 [Debugging](#debugging) · [Uninstall](#uninstall) · [Donate](#donate)
 
 <br/>
@@ -37,14 +37,17 @@ and boot login page. On schedule. Forever. Zero maintenance.
 ---
 
 <a id="features"></a>
+
 ## ✨ Features
 
 | | |
 |---|---|
-| 🎲 **5 free image sources** | Windows Spotlight · Bing Daily · NASA APOD · Wallhaven · Lorem Picsum — random pick each run, automatic fallback when one fails |
+| 🗂 **3 image categories** | Pick your style at install: **Default** (Spotlight · Bing · NASA APOD · Wallhaven · Picsum), **Scientific** (NASA library · Wikimedia · Openverse — research & tech imagery) or **Wildlife Sanctuary** (iNaturalist · Wikimedia Featured · Openverse — animals & nature). 5 free APIs per category |
+| 🎲 **Random + fallback** | Random source each run inside your category, automatic fallback when one fails |
 | 🖥️ **Screen-size aware** | Detects your display (xrandr / wlr-randr / hyprctl / DRM) and rejects images smaller than it |
 | 🚫 **Never repeats** | URL + SHA-256 history — you won't see the same image twice |
 | 🔒 **Lock screen + login page** | One constant image path; GDM theme patch, LightDM (gtk/slick), SDDM, LXDM, AccountsService |
+| 🌐 **Boot + internet aware** | Runs once after every boot; if offline it waits and applies the moment internet returns — never re-triggers on later net flaps |
 | 🔔 **Smart notifications** | Compact popup with a **[View]** button linking to the image's source page |
 | 💾 **Storage cap** | 500 MB / 1 GB / custom archive — oldest images pruned automatically |
 | ⏰ **Set & forget** | systemd user timers: wallpaper every 2.5 h, lock screen every 4 h, catch-up after suspend |
@@ -57,13 +60,14 @@ and boot login page. On schedule. Forever. Zero maintenance.
 <div align="center">
 
 ### 🏠 The Main Menu
+
 *One dialog drives everything — status-aware, the most likely action is pre-selected.*
 
 <img src="assets/screenshots/01-menu.png" width="480" alt="Main menu"/>
 
 ---
 
-### 📦 Install — a guided 4-step journey
+### 📦 Install — a guided journey
 
 | Step 1 — Keep old wallpapers? | Step 2 — Pick a storage cap |
 |:---:|:---:|
@@ -73,9 +77,10 @@ and boot login page. On schedule. Forever. Zero maintenance.
 | Step 3 — Custom size (optional) | Step 4 — One-time password notice |
 |:---:|:---:|
 | <img src="assets/screenshots/04-custom-limit.png" width="420"/> | <img src="assets/screenshots/05-password-notice.png" width="420"/> |
-| *Accepts `750MB`, `2GB`, …* | *sudo asked exactly once — never again* |
+| *Accepts* `750MB`*,* `2GB`*, …* | *sudo asked exactly once — never again* |
 
 ### ✅ Install finished
+
 *Everything confirmed at a glance — wallpaper, lock screen, timers — plus the log path.*
 
 <img src="assets/screenshots/06-install-summary.png" width="720" alt="Install summary over fresh wallpaper"/>
@@ -83,11 +88,13 @@ and boot login page. On schedule. Forever. Zero maintenance.
 ---
 
 ### 🖼 The Result
+
 *A fresh wallpaper is already on the desktop the moment setup ends.*
 
 <img src="assets/screenshots/07-desktop-wallpaper.png" width="720" alt="Desktop with fetched wallpaper"/>
 
 ### ⚡ Update now
+
 *Pick "Update now" anytime — two progress bars later:*
 
 <img src="assets/screenshots/08-update-applied.png" width="420" alt="Fresh images applied"/>
@@ -106,16 +113,72 @@ and boot login page. On schedule. Forever. Zero maintenance.
 ## 📸 How it works
 
 ```
-┌─────────────┐          ┌───────────────┐          ┌─────────────────────────┐
-│  5 free     │  random  │  download     │ validate │  desktop wallpaper      │
-│  image APIs │─────────▶│  + dedup      │─────────▶│  lock screen            │
-│  + fallback │          │  (≥ screen)   │          │  login page (GDM, …)    │
-└─────────────┘          └───────────────┘          └─────────────────────────┘
+┌──────────────┐          ┌───────────────┐          ┌─────────────────────────┐
+│ your category│  random  │  download     │ validate │  desktop wallpaper      │
+│ (5 free APIs)│─────────▶│  + dedup      │─────────▶│  lock screen            │
+│ + fallback   │          │  (≥ screen)   │          │  login page (GDM, …)    │
+└──────────────┘          └───────────────┘          └─────────────────────────┘
        ▲                                                         │
-       └───────────────── systemd timers (2.5h / 4h) ────────────┘
+       ├──── boot services (wait for internet, run once) ────────┤
+       └──────────── systemd timers (2.5 h / 4 h) ───────────────┘
 ```
 
+<a id="structure"></a>
+
+## 📁 File & folder structure
+
+Everything the suite creates on your system, at a glance:
+
+```
+$HOME/
+├── .spotlight/                          🧩 the engine scripts
+│   ├── spotlight.sh                        desktop wallpaper (15 sources, 3 categories)
+│   └── lockscreen.sh                       lock screen + login page
+│
+├── .spotlight-timers/                   ⏰ systemd units (master copies)
+│   ├── spotlight.service / .timer          wallpaper · every 2 h 30 m + daily
+│   ├── spotlight-boot.service              once per boot — waits for internet
+│   ├── lockscreen.service / .timer         lock image · every 4 h
+│   └── lockscreen-boot.service             once per boot — waits for internet
+│
+├── .config/
+│   ├── wallpaper/config                 ⚙️ CATEGORY · ARCHIVE_ENABLED · LIMIT_MB
+│   └── systemd/user/…                      symlinks → ~/.spotlight-timers/*
+│
+├── .local/share/
+│   ├── backgrounds/                     🖼 current wallpapers (timestamp-source-title.jpg)
+│   └── spotlight/
+│       ├── background.jpg                  symlink to the active wallpaper
+│       ├── history.txt                     no-repeat DB (URLs + SHA-256, last 500)
+│       └── wallpaper.log                   per-run log (cleared on success)
+│
+├── .wallpaper/                          🗃 archive of previous wallpapers (auto-pruned)
+└── .cache/wallpaper-suite/
+    ├── suite.log                           installer / debug log
+    ├── suite.pid                           single-instance lock
+    └── payload.hash                        skips re-extraction when unchanged
+```
+
+System-wide (the only root-touched spots — set up once, backed up, restored on uninstall):
+
+```
+/usr/share/backgrounds/lockscreen.jpg    the ONE constant lock/login image
+                                         (owned by you — timers overwrite it without root)
+/etc/lightdm/… · GDM gresource ·         greeter configs pointed at that path, once
+/etc/sddm… · AccountsService
+```
+
+| Item | Path |
+|---|---|
+| Scripts | `~/.spotlight/spotlight.sh`, `~/.spotlight/lockscreen.sh` |
+| Timers & services | `~/.spotlight-timers/` (symlinked into `~/.config/systemd/user/`) |
+| Config (category, archive) | `~/.config/wallpaper/config` |
+| Wallpapers + archive | `~/.local/share/backgrounds/`, `~/.wallpaper/` |
+| Lock/login image (constant) | `/usr/share/backgrounds/lockscreen.jpg` |
+| Logs | `~/.local/share/spotlight/wallpaper.log`, `~/.cache/wallpaper-suite/suite.log` |
+
 <a id="installation"></a>
+
 ## 🚀 Installation
 
 ### Quick start (copy / paste)
@@ -135,7 +198,8 @@ chmod +x WallpaperSuite-x86_64.AppImage
 ./WallpaperSuite-x86_64.AppImage
 ```
 
-Choose "📦 Install" in the menu and follow the guided setup.
+Choose **📦 Install** in the menu, pick your **image category**
+(Default / Scientific / Wildlife Sanctuary) and follow the guided setup.
 
 > Tip: Run the AppImage as your normal user (never sudo). The installer will ask for your
 > password only once if it needs it for the login-screen setup.
@@ -160,12 +224,12 @@ Choose **📦 Install** in the menu. Done.
 bash wallpaper-suite.sh                 # GUI menu: Install / Reinstall / Uninstall / Update now
 ```
 
-### Option 3 — Individual components
+### Option 3 — Run the engines directly (after install)
 
 ```bash
-bash spotlight.sh          # desktop wallpaper only (setup wizard on first run)
-bash lockscreen.sh next    # lock screen + login page only
-# timers: use `wallpaper-suite.sh install` — units are embedded in it
+bash ~/.spotlight/spotlight.sh          # desktop wallpaper only
+bash ~/.spotlight/lockscreen.sh next    # lock screen + login page only
+# timers: `wallpaper-suite.sh install` sets them up — units are embedded in it
 ```
 
 ### Enable timers manually (systemd user)
@@ -173,15 +237,10 @@ bash lockscreen.sh next    # lock screen + login page only
 If you prefer to enable the timers yourself (or your system did not automatically), run:
 
 ```bash
-# reload user systemd units (after install)
 systemctl --user daemon-reload
-
-# enable and start the timers
-systemctl --user enable --now spotlight.timer
-systemctl --user enable --now lockscreen.timer
-
-# check status
-systemctl --user status spotlight.timer lockscreen.timer
+systemctl --user enable --now spotlight.timer lockscreen.timer
+systemctl --user enable spotlight-boot.service lockscreen-boot.service
+systemctl --user list-timers            # check schedule
 ```
 
 If you don't use systemd user sessions, the installer prints a cron fallback line you
@@ -194,16 +253,13 @@ can add to your crontab.
 > - Fresh downloads have no execute bit — that's why the first run is `bash <file>`;
 >   the script offers to `chmod +x` itself so `./` works afterwards.
 
-### What gets installed where
+### Switching category later
 
-| Item | Path |
-|---|---|
-| Scripts | `~/spotlight.sh`, `~/lockscreen.sh` |
-| Config | `~/.config/wallpaper/config` |
-| Wallpapers + archive | `~/.local/share/backgrounds/`, `~/.wallpaper/` |
-| Lock/login image (constant path) | `/usr/share/backgrounds/lockscreen.jpg` |
-| systemd user units | `~/.config/systemd/user/{spotlight,lockscreen}.{service,timer}` |
-| Logs | `~/.local/share/spotlight/wallpaper.log`, `~/.cache/wallpaper-suite/suite.log` |
+```bash
+sed -i 's/^CATEGORY=.*/CATEGORY=science/' ~/.config/wallpaper/config   # or: wildlife / default
+```
+
+Takes effect from the next run — or use menu → 🔄 Reinstall and pick a different style.
 
 ## 🔄 Reinstall
 
@@ -213,21 +269,22 @@ to keep your downloaded images):
 ```bash
 ./WallpaperSuite-x86_64.AppImage reinstall     # AppImage — or menu → 🔄 Reinstall
 bash wallpaper-suite.sh reinstall              # all-in-one script
-bash spotlight.sh reinstall                    # component-level (wallpaper only)
 ```
 
 <a id="uninstall"></a>
+
 ## 🗑 Uninstall
 
 One command removes **everything** — timers, units, config, history, downloaded
-images — and **restores the original login theme** (GDM gresource backup):
+images, the `~/.spotlight/` and `~/.spotlight-timers/` folders — and **restores the
+original login theme** (GDM gresource backup):
 
 ```bash
 ./WallpaperSuite-x86_64.AppImage uninstall     # AppImage — or menu → 🗑 Uninstall
 bash wallpaper-suite.sh uninstall              # all-in-one script
 ```
 
-You'll be asked whether to also delete the two scripts themselves.
+You'll be asked whether to also delete the `~/.spotlight` folder itself.
 
 ## 📦 Dependencies
 
@@ -246,6 +303,7 @@ The suite checks **only what your system actually needs** and offers to install 
 | `systemd` (user session) | timers | optional (cron line printed otherwise) |
 
 <a id="debugging"></a>
+
 ## 🐞 Debugging
 
 ```bash
@@ -254,7 +312,7 @@ cat ~/.cache/wallpaper-suite/suite.log             # persistent suite log (incl.
 cat ~/.local/share/spotlight/wallpaper.log         # per-run wallpaper log (cleared on success)
 systemctl --user list-timers                       # are the timers scheduled?
 journalctl --user -u spotlight.service -n 20       # what did the last timer run do?
-bash spotlight.sh --source bing --no-fallback      # test one source, raw errors
+bash ~/.spotlight/spotlight.sh --source bing --no-fallback   # test one source, raw errors
 ```
 
 Common issues:
@@ -264,25 +322,31 @@ Common issues:
 | `Permission denied` on `./script.sh` | fresh download has no exec bit → run `bash script.sh` once (it fixes itself) |
 | Wallpaper doesn't change | ran with `sudo` → run as your user (the script now auto-drops back) |
 | Login page unchanged | GDM shows it after **reboot**; check `sudo systemctl restart gdm3` |
+| No wallpaper after boot without internet | it's waiting — applies the moment connection returns |
 | Notification without buttons | your daemon lacks the `actions` capability → plain credit line is shown |
 | `OVER_RATE_LIMIT` from NASA | shared `DEMO_KEY` exhausted → get a free key: `NASA_API_KEY=xxx` |
 
 <a id="compatibility"></a>
+
 ## 🧩 Compatibility
 
 **Desktops:** GNOME · KDE Plasma · XFCE · Cinnamon · MATE · LXQt/LXDE · Budgie ·
 Deepin · Pantheon · Sway · Hyprland · i3/openbox (via feh/nitrogen/xwallpaper/swww/swaybg)
+
 **Greeters:** GDM (incl. Ubuntu Yaru) · LightDM gtk/slick · SDDM · LXDM
+
 **Sessions:** X11 & Wayland · **Init:** systemd timers (or cron fallback)
 
 ## 🛠 Building from source
 
 `wallpaper-suite.sh` ships with both scripts and the systemd units embedded —
-it **is** the source and the build. Edit `spotlight.sh` / `lockscreen.sh` and
+it **is** the source and the build. Edit the embedded `spotlight.sh` / `lockscreen.sh` and
 re-embed them (base64) into the suite if you fork the project.
 
 <a id="donate"></a>
+
 ## ❤️ Support the project
+
 <details>
 <summary><b>&nbsp;🌍 Tap here for your support sir!</b></summary>
 <br/>
@@ -306,8 +370,11 @@ If Wallpaper Suite saves you time, consider supporting development:
 
 - **Image sources:** [Windows Spotlight](https://www.microsoft.com) (Microsoft),
   [Bing Image of the Day](https://www.bing.com) (Microsoft),
-  [NASA APOD](https://apod.nasa.gov), [Wallhaven](https://wallhaven.cc),
-  [Lorem Picsum](https://picsum.photos) / [Unsplash](https://unsplash.com) photographers
+  [NASA APOD](https://apod.nasa.gov) & [NASA Image Library](https://images.nasa.gov),
+  [Wallhaven](https://wallhaven.cc), [Lorem Picsum](https://picsum.photos) /
+  [Unsplash](https://unsplash.com) photographers,
+  [Wikimedia Commons](https://commons.wikimedia.org), [Openverse](https://openverse.org),
+  [iNaturalist](https://www.inaturalist.org) contributors
 - **Tools:** [appimagetool](https://github.com/AppImage/appimagetool), zenity, jq
 - All wallpaper copyrights belong to their respective owners; the **[View]**
   notification button always links to the original source for attribution.
@@ -317,3 +384,9 @@ If Wallpaper Suite saves you time, consider supporting development:
 [MIT](https://github.com/hawkcode247/Wallpaper-Updater/blob/main/LICENSE) — do whatever you want, no warranty.
 **Please read the [DISCLAIMER](https://github.com/hawkcode247/Wallpaper-Updater/blob/main/DISCLAIMER.md)** — liability, bug reporting,
 and how to get authorized as a collaborator.
+
+---
+
+<div align="center">
+<sub>~170 KB of bash · no daemons · no Electron · no telemetry</sub>
+</div>
