@@ -32,6 +32,7 @@ CONFIG_FILE="$CONFIG_DIR/config"
 ARCHIVE_ENABLED=1
 LIMIT_MB=500
 PRUNE_TARGET_PERCENT=80
+INTERVAL_MIN=150
 MIN_WIDTH="${WALLPAPER_MIN_WIDTH:-}"
 MIN_HEIGHT="${WALLPAPER_MIN_HEIGHT:-}"
 HISTORY_FILE="$SPOTLIGHT_PATH/history.txt"
@@ -61,6 +62,7 @@ Usage: $(basename "$0") [command] [options]
 
 Commands:
   next (default)   Fetch and apply the next wallpaper
+  predownload      (boot) fetch and save the next wallpaper without applying
   setup            Run the setup wizard again
   clean            Remove low-resolution images from disk
   reinstall        Reset everything and run setup fresh
@@ -80,6 +82,7 @@ EOF
 DO_CLEAN=0
 DO_SETUP=0
 WAIT_NET=0
+DO_PREDOWNLOAD=0
 DO_UNINSTALL=0
 DO_REINSTALL=0
 ASSUME_YES=0
@@ -87,6 +90,7 @@ ASSUME_YES=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         next)           shift ;;
+        predownload)    DO_PREDOWNLOAD=1; shift ;;
         setup)          DO_SETUP=1; shift ;;
         clean|-c|--clean) DO_CLEAN=1; shift ;;
         reinstall)      DO_REINSTALL=1; shift ;;
@@ -367,6 +371,7 @@ download() {
 mkdir -p "$SPOTLIGHT_PATH" "$BACKGROUNDS_PATH" "$CONFIG_DIR"
 
 LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/wallpaper-$(id -u).lock"
+mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
 if command -v flock &>/dev/null; then
     exec 9>"$LOCK_FILE" || true
     if ! flock -n 9; then
@@ -452,6 +457,7 @@ load_config() {
         case "$key" in
             ARCHIVE_ENABLED) [[ "$val" =~ ^[01]$ ]] && ARCHIVE_ENABLED="$val" ;;
             LIMIT_MB)        [[ "$val" =~ ^[0-9]+$ ]] && LIMIT_MB="$val" ;;
+            INTERVAL_MIN)     [[ "$val" =~ ^[0-9]+$ && "$val" -ge 1 ]] && INTERVAL_MIN="$val" ;;
             CATEGORY)        [[ "$val" =~ ^(default|science|wildlife)$ ]] && CATEGORY="$val" ;;
         esac
     done < "$CONFIG_FILE"
@@ -463,6 +469,7 @@ save_config() {
 ARCHIVE_ENABLED=$ARCHIVE_ENABLED
 LIMIT_MB=$LIMIT_MB
 CATEGORY=$CATEGORY
+INTERVAL_MIN=$INTERVAL_MIN
 EOF
 }
 
@@ -529,19 +536,154 @@ fi
 
 apply_category
 
+LAST_CHANGE_FILE="$SPOTLIGHT_PATH/last_change"
+INTERVAL_LIMIT=$(( ${INTERVAL_MIN:-150} * 60 ))
+
+detect_environment() {
+    local de="${XDG_CURRENT_DESKTOP:-}${XDG_SESSION_DESKTOP:-}${DESKTOP_SESSION:-}"
+    de="${de,,}"
+    case "$de" in
+        *gnome*|*unity*|*pantheon*) echo gnome ;;
+        *cinnamon*)                 echo cinnamon ;;
+        *budgie*)                   echo budgie ;;
+        *mate*)                     echo mate ;;
+        *kde*|*plasma*)             echo kde ;;
+        *xfce*)                     echo xfce ;;
+        *lxqt*)                     echo lxqt ;;
+        *lxde*)                     echo lxde ;;
+        *deepin*)                   echo deepin ;;
+        *sway*)                     echo sway ;;
+        *hyprland*)                 echo hyprland ;;
+        *)
+            if pgrep -x gnome-shell   &>/dev/null; then echo gnome
+            elif pgrep -x cinnamon    &>/dev/null; then echo cinnamon
+            elif pgrep -x mate-session &>/dev/null; then echo mate
+            elif pgrep -x plasmashell  &>/dev/null; then echo kde
+            elif pgrep -x xfce4-session &>/dev/null; then echo xfce
+            elif pgrep -x lxqt-session  &>/dev/null; then echo lxqt
+            elif pgrep -x lxsession     &>/dev/null; then echo lxde
+            elif pgrep -x sway          &>/dev/null; then echo sway
+            elif pgrep -x Hyprland      &>/dev/null; then echo hyprland
+            else echo unknown; fi
+            ;;
+    esac
+}
+
+set_wallpaper() {
+    local img="$1" env applied=1
+    env="$(detect_environment)"
+    case "$env" in
+        gnome|budgie)
+            if command -v gsettings &>/dev/null; then
+                gsettings set org.gnome.desktop.background picture-options "zoom" 2>/dev/null || true
+                gsettings set org.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0
+                gsettings set org.gnome.desktop.background picture-uri-dark "file://$img" 2>/dev/null || true
+            fi ;;
+        cinnamon)
+            command -v gsettings &>/dev/null && \
+                gsettings set org.cinnamon.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0 ;;
+        mate)
+            command -v gsettings &>/dev/null && \
+                gsettings set org.mate.background picture-filename "$img" 2>/dev/null && applied=0 ;;
+        deepin)
+            command -v gsettings &>/dev/null && \
+                gsettings set com.deepin.wrap.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0 ;;
+        kde)
+            if command -v qdbus &>/dev/null || command -v qdbus6 &>/dev/null; then
+                local qd; qd="$(command -v qdbus || command -v qdbus6)"
+                "$qd" org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
+                    "var allDesktops = desktops();
+                    for (var i = 0; i < allDesktops.length; i++) {
+                        var d = allDesktops[i];
+                        d.wallpaperPlugin = 'org.kde.image';
+                        d.currentConfigGroup = ['Wallpaper','org.kde.image','General'];
+                        d.writeConfig('Image', 'file://$img');
+                    }" 2>/dev/null && applied=0
+            fi
+            if [[ $applied -ne 0 ]] && command -v plasma-apply-wallpaperimage &>/dev/null; then
+                plasma-apply-wallpaperimage "$img" 2>/dev/null && applied=0
+            fi ;;
+        xfce)
+            if command -v xfconf-query &>/dev/null; then
+                local prop
+                while IFS= read -r prop; do
+                    xfconf-query -c xfce4-desktop -p "$prop" -s "$img" 2>/dev/null && applied=0
+                done < <(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E "last-image$" || true)
+            fi ;;
+        lxqt)
+            command -v pcmanfm-qt &>/dev/null && \
+                pcmanfm-qt --set-wallpaper "$img" --wallpaper-mode=zoom 2>/dev/null && applied=0 ;;
+        lxde)
+            command -v pcmanfm &>/dev/null && \
+                pcmanfm --set-wallpaper "$img" --wallpaper-mode=fit 2>/dev/null && applied=0 ;;
+        sway)
+            command -v swaymsg &>/dev/null && \
+                swaymsg "output * bg '$img' fill" &>/dev/null && applied=0 ;;
+        hyprland)
+            if command -v hyprctl &>/dev/null && pgrep -x hyprpaper &>/dev/null; then
+                hyprctl hyprpaper preload "$img" &>/dev/null && \
+                hyprctl hyprpaper wallpaper ",$img" &>/dev/null && applied=0
+            fi ;;
+    esac
+    if [[ $applied -ne 0 ]]; then
+        if [[ -n "${WAYLAND_DISPLAY:-}" || "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
+            if command -v swww &>/dev/null; then
+                if ! pgrep -x swww-daemon &>/dev/null; then
+                    (setsid swww-daemon &>/dev/null &)
+                    sleep 0.5
+                fi
+                swww img "$img" 2>/dev/null && applied=0
+            fi
+            if [[ $applied -ne 0 ]] && command -v swaybg &>/dev/null; then
+                pkill -x swaybg 2>/dev/null || true
+                (setsid swaybg -i "$img" -m fill &>/dev/null &) && applied=0
+            fi
+            if [[ $applied -ne 0 ]] && command -v wbg &>/dev/null; then
+                pkill -x wbg 2>/dev/null || true
+                (setsid wbg "$img" &>/dev/null &) && applied=0
+            fi
+        fi
+        if [[ $applied -ne 0 && -n "${DISPLAY:-}" ]]; then
+            if command -v feh &>/dev/null; then
+                feh --bg-fill "$img" 2>/dev/null && applied=0
+            elif command -v nitrogen &>/dev/null; then
+                nitrogen --set-zoom-fill "$img" 2>/dev/null && applied=0
+            elif command -v xwallpaper &>/dev/null; then
+                xwallpaper --zoom "$img" 2>/dev/null && applied=0
+            fi
+        fi
+        if [[ $applied -ne 0 ]] && command -v gsettings &>/dev/null; then
+            gsettings set org.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0
+            gsettings set org.gnome.desktop.background picture-uri-dark "file://$img" 2>/dev/null || true
+        fi
+    fi
+    if [[ $applied -eq 0 ]]; then
+        log info "Wallpaper applied via: $env (${XDG_SESSION_TYPE:-unknown} session)"
+        [[ -t 1 ]] && echo "✔ Applied to desktop via: $env"
+        # Record successful update time
+        date +%s > "$LAST_CHANGE_FILE" 2>/dev/null || true
+        systemctl --user restart spotlight.timer lockscreen.timer 2>/dev/null || true
+        return 0
+    else
+        log warning "Could not apply wallpaper (env: $env, session: ${XDG_SESSION_TYPE:-unknown}) — image saved at $img"
+        [[ -t 1 ]] && echo "⚠ Could not apply to desktop (detected env: $env, session: ${XDG_SESSION_TYPE:-unknown}) — image saved at $img" >&2
+        return 1
+    fi
+}
+
 detect_screen_size() {
     SCREEN_W=0; SCREEN_H=0
     local out=""
     if [[ -n "${DISPLAY:-}" ]] && command -v xrandr &>/dev/null; then
-        out="$(xrandr --current 2>/dev/null | sed -n 's/.* connected.* \([0-9]\+\)x\([0-9]\+\)+.*/\1 \2/p' | sort -rn | head -1)"
+        out="$(xrandr --current 2>/dev/null | sed -n 's/.* connected.* \([0-9]\+\)x\([0-9]\+\)+.*/\1 \2/p' | sort -rn | head -1)" || true
         [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
     if (( SCREEN_W == 0 )) && [[ -n "${DISPLAY:-}" ]] && command -v xdpyinfo &>/dev/null; then
-        out="$(xdpyinfo 2>/dev/null | sed -n 's/.*dimensions:[[:space:]]*\([0-9]\+\)x\([0-9]\+\) pixels.*/\1 \2/p' | head -1)"
+        out="$(xdpyinfo 2>/dev/null | sed -n 's/.*dimensions:[[:space:]]*\([0-9]\+\)x\([0-9]\+\) pixels.*/\1 \2/p' | head -1)" || true
         [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
     if (( SCREEN_W == 0 )) && [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wlr-randr &>/dev/null; then
-        out="$(wlr-randr 2>/dev/null | sed -n 's/^[[:space:]]*\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p' | sort -rn | head -1)"
+        out="$(wlr-randr 2>/dev/null | sed -n 's/^[[:space:]]*\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p' | sort -rn | head -1)" || true
         [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
     if (( SCREEN_W == 0 )) && command -v swaymsg &>/dev/null; then
@@ -556,7 +698,7 @@ detect_screen_size() {
         local f
         for f in /sys/class/drm/*/modes; do
             [[ -r "$f" ]] || continue
-            out="$(head -1 "$f" 2>/dev/null | sed -n 's/^\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p')"
+            out="$(head -1 "$f" 2>/dev/null | sed -n 's/^\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p')" || true
             if [[ -n "$out" ]]; then read -r SCREEN_W SCREEN_H <<< "$out"; break; fi
         done
     fi
@@ -924,8 +1066,9 @@ if (( uptime_sec < 300 )); then
     FORCE=1
 fi
 
-LAST_CHANGE_FILE="$SPOTLIGHT_PATH/last_change"
-INTERVAL_LIMIT=9000 # 2.5 hours in seconds
+if [[ "$DO_PREDOWNLOAD" == "1" ]]; then
+    FORCE=1
+fi
 
 if [[ "$FORCE" == "0" && -f "$LAST_CHANGE_FILE" && -f "$SPOTLIGHT_PATH/background.jpg" ]]; then
     last_time="$(cat "$LAST_CHANGE_FILE" 2>/dev/null || echo 0)"
@@ -934,133 +1077,31 @@ if [[ "$FORCE" == "0" && -f "$LAST_CHANGE_FILE" && -f "$SPOTLIGHT_PATH/backgroun
         elapsed=$(( now - last_time ))
         if (( elapsed < INTERVAL_LIMIT && elapsed >= 0 )); then
             log info "Interval not elapsed yet (${elapsed}s / ${INTERVAL_LIMIT}s). Re-applying current desktop wallpaper."
-            current_local_bg="$SPOTLIGHT_PATH/background.jpg"
-            if [[ -f "$current_local_bg" ]]; then
-                detect_environment() {
-                    local de="${XDG_CURRENT_DESKTOP:-}${XDG_SESSION_DESKTOP:-}${DESKTOP_SESSION:-}"
-                    de="${de,,}"
-                    case "$de" in
-                        *gnome*|*unity*|*pantheon*) echo gnome ;;
-                        *cinnamon*)                 echo cinnamon ;;
-                        *budgie*)                   echo budgie ;;
-                        *mate*)                     echo mate ;;
-                        *kde*|*plasma*)             echo kde ;;
-                        *xfce*)                     echo xfce ;;
-                        *lxqt*)                     echo lxqt ;;
-                        *lxde*)                     echo lxde ;;
-                        *deepin*)                   echo deepin ;;
-                        *sway*)                     echo sway ;;
-                        *hyprland*)                 echo hyprland ;;
-                        *)
-                            if pgrep -x gnome-shell   &>/dev/null; then echo gnome
-                            elif pgrep -x cinnamon    &>/dev/null; then echo cinnamon
-                            elif pgrep -x mate-session &>/dev/null; then echo mate
-                            elif pgrep -x plasmashell  &>/dev/null; then echo kde
-                            elif pgrep -x xfce4-session &>/dev/null; then echo xfce
-                            elif pgrep -x lxqt-session  &>/dev/null; then echo lxqt
-                            elif pgrep -x lxsession     &>/dev/null; then echo lxde
-                            elif pgrep -x sway          &>/dev/null; then echo sway
-                            elif pgrep -x Hyprland      &>/dev/null; then echo hyprland
-                            else echo unknown; fi
-                            ;;
-                    esac
-                }
-                set_wallpaper_local() {
-                    local img="$1" env applied=1
-                    env="$(detect_environment)"
-                    case "$env" in
-                        gnome|budgie)
-                            if command -v gsettings &>/dev/null; then
-                                gsettings set org.gnome.desktop.background picture-options "zoom" 2>/dev/null || true
-                                gsettings set org.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0
-                                gsettings set org.gnome.desktop.background picture-uri-dark "file://$img" 2>/dev/null || true
-                            fi ;;
-                        cinnamon)
-                            command -v gsettings &>/dev/null && \
-                                gsettings set org.cinnamon.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0 ;;
-                        mate)
-                            command -v gsettings &>/dev/null && \
-                                gsettings set org.mate.background picture-filename "$img" 2>/dev/null && applied=0 ;;
-                        deepin)
-                            command -v gsettings &>/dev/null && \
-                                gsettings set com.deepin.wrap.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0 ;;
-                        kde)
-                            if command -v qdbus &>/dev/null || command -v qdbus6 &>/dev/null; then
-                                local qd; qd="$(command -v qdbus || command -v qdbus6)"
-                                "$qd" org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
-                                    "var allDesktops = desktops();
-                                    for (var i = 0; i < allDesktops.length; i++) {
-                                        var d = allDesktops[i];
-                                        d.wallpaperPlugin = 'org.kde.image';
-                                        d.currentConfigGroup = ['Wallpaper','org.kde.image','General'];
-                                        d.writeConfig('Image', 'file://$img');
-                                    }" 2>/dev/null && applied=0
-                            fi
-                            if [[ $applied -ne 0 ]] && command -v plasma-apply-wallpaperimage &>/dev/null; then
-                                plasma-apply-wallpaperimage "$img" 2>/dev/null && applied=0
-                            fi ;;
-                        xfce)
-                            if command -v xfconf-query &>/dev/null; then
-                                local prop
-                                while IFS= read -r prop; do
-                                    xfconf-query -c xfce4-desktop -p "$prop" -s "$img" 2>/dev/null && applied=0
-                                done < <(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E "last-image$" || true)
-                            fi ;;
-                        lxqt)
-                            command -v pcmanfm-qt &>/dev/null && \
-                                pcmanfm-qt --set-wallpaper "$img" --wallpaper-mode=zoom 2>/dev/null && applied=0 ;;
-                        lxde)
-                            command -v pcmanfm &>/dev/null && \
-                                pcmanfm --set-wallpaper "$img" --wallpaper-mode=fit 2>/dev/null && applied=0 ;;
-                        sway)
-                            command -v swaymsg &>/dev/null && \
-                                swaymsg "output * bg '$img' fill" &>/dev/null && applied=0 ;;
-                        hyprland)
-                            if command -v hyprctl &>/dev/null && pgrep -x hyprpaper &>/dev/null; then
-                                hyprctl hyprpaper preload "$img" &>/dev/null && \
-                                hyprctl hyprpaper wallpaper ",$img" &>/dev/null && applied=0
-                            fi ;;
-                    esac
-                    if [[ $applied -ne 0 ]]; then
-                        if [[ -n "${WAYLAND_DISPLAY:-}" || "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
-                            if command -v swww &>/dev/null; then
-                                if ! pgrep -x swww-daemon &>/dev/null; then
-                                    (setsid swww-daemon &>/dev/null &)
-                                    sleep 0.5
-                                fi
-                                swww img "$img" 2>/dev/null && applied=0
-                            fi
-                            if [[ $applied -ne 0 ]] && command -v swaybg &>/dev/null; then
-                                pkill -x swaybg 2>/dev/null || true
-                                (setsid swaybg -i "$img" -m fill &>/dev/null &) && applied=0
-                            fi
-                            if [[ $applied -ne 0 ]] && command -v wbg &>/dev/null; then
-                                pkill -x wbg 2>/dev/null || true
-                                (setsid wbg "$img" &>/dev/null &) && applied=0
-                            fi
-                        fi
-                        if [[ $applied -ne 0 && -n "${DISPLAY:-}" ]]; then
-                            if command -v feh &>/dev/null; then
-                                feh --bg-fill "$img" 2>/dev/null && applied=0
-                            elif command -v nitrogen &>/dev/null; then
-                                nitrogen --set-zoom-fill "$img" 2>/dev/null && applied=0
-                            elif command -v xwallpaper &>/dev/null; then
-                                xwallpaper --zoom "$img" 2>/dev/null && applied=0
-                            fi
-                        fi
-                        if [[ $applied -ne 0 ]] && command -v gsettings &>/dev/null; then
-                            gsettings set org.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0
-                            gsettings set org.gnome.desktop.background picture-uri-dark "file://$img" 2>/dev/null || true
-                        fi
-                    fi
-                    return $applied
-                }
-                if set_wallpaper_local "$current_local_bg"; then
-                    RUN_OK=1
-                    exit 0
-                fi
+            if set_wallpaper "$SPOTLIGHT_PATH/background.jpg"; then
+                RUN_OK=1
+                exit 0
             fi
         fi
+    fi
+fi
+
+# Instant apply of the wallpaper predownloaded at boot (before login).
+# Runs even when FORCE=1 (uptime-based boot force) — the predownload itself
+# already did the "fresh at boot" job, so the session just applies it.
+if [[ -f "$SPOTLIGHT_PATH/predownloaded" && -f "$SPOTLIGHT_PATH/background.jpg" \
+      && -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    _pm="$(stat -c %Y "$SPOTLIGHT_PATH/predownloaded" 2>/dev/null || echo 0)"
+    if (( $(date +%s) - _pm <= INTERVAL_LIMIT )); then
+        log info "Applying wallpaper predownloaded at boot — instantly."
+        rm -f "$SPOTLIGHT_PATH/predownloaded"
+        if set_wallpaper "$SPOTLIGHT_PATH/background.jpg"; then
+            ensure_dbus_session && notify "Wallpaper Updated" "Wallpaper predownloaded at boot — applied now."
+            RUN_OK=1
+            exit 0
+        fi
+    else
+        rm -f "$SPOTLIGHT_PATH/predownloaded"
+        log notice "Boot predownload too old — fetching fresh wallpaper."
     fi
 fi
 
@@ -1107,137 +1148,17 @@ fi
 
 ln -sf "$imagePath" "$SPOTLIGHT_PATH/background.jpg"
 
-detect_environment() {
-    local de="${XDG_CURRENT_DESKTOP:-}${XDG_SESSION_DESKTOP:-}${DESKTOP_SESSION:-}"
-    de="${de,,}"
-    case "$de" in
-        *gnome*|*unity*|*pantheon*) echo gnome ;;
-        *cinnamon*)                 echo cinnamon ;;
-        *budgie*)                   echo budgie ;;
-        *mate*)                     echo mate ;;
-        *kde*|*plasma*)             echo kde ;;
-        *xfce*)                     echo xfce ;;
-        *lxqt*)                     echo lxqt ;;
-        *lxde*)                     echo lxde ;;
-        *deepin*)                   echo deepin ;;
-        *sway*)                     echo sway ;;
-        *hyprland*)                 echo hyprland ;;
-        *)
-            if pgrep -x gnome-shell   &>/dev/null; then echo gnome
-            elif pgrep -x cinnamon    &>/dev/null; then echo cinnamon
-            elif pgrep -x mate-session &>/dev/null; then echo mate
-            elif pgrep -x plasmashell  &>/dev/null; then echo kde
-            elif pgrep -x xfce4-session &>/dev/null; then echo xfce
-            elif pgrep -x lxqt-session  &>/dev/null; then echo lxqt
-            elif pgrep -x lxsession     &>/dev/null; then echo lxde
-            elif pgrep -x sway          &>/dev/null; then echo sway
-            elif pgrep -x Hyprland      &>/dev/null; then echo hyprland
-            else echo unknown; fi
-            ;;
-    esac
-}
+if [[ "$DO_PREDOWNLOAD" == "1" ]]; then
+    date +%s > "$LAST_CHANGE_FILE" 2>/dev/null || true
+    touch "$SPOTLIGHT_PATH/predownloaded" 2>/dev/null || true
+    resolution="$(image_resolution "$imagePath")"
+    echo "✔ Predownloaded for login: $imagePath (${resolution:-?})"
+    log info "Predownloaded at boot [$SOURCE]: $title (${resolution:-?})"
+    RUN_OK=1
+    exit 0
+fi
 
-set_wallpaper() {
-    local img="$1" env applied=1
-    env="$(detect_environment)"
-    case "$env" in
-        gnome|budgie)
-            if command -v gsettings &>/dev/null; then
-                gsettings set org.gnome.desktop.background picture-options "zoom" 2>/dev/null || true
-                gsettings set org.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0
-                gsettings set org.gnome.desktop.background picture-uri-dark "file://$img" 2>/dev/null || true
-            fi ;;
-        cinnamon)
-            command -v gsettings &>/dev/null && \
-                gsettings set org.cinnamon.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0 ;;
-        mate)
-            command -v gsettings &>/dev/null && \
-                gsettings set org.mate.background picture-filename "$img" 2>/dev/null && applied=0 ;;
-        deepin)
-            command -v gsettings &>/dev/null && \
-                gsettings set com.deepin.wrap.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0 ;;
-        kde)
-            if command -v qdbus &>/dev/null || command -v qdbus6 &>/dev/null; then
-                local qd; qd="$(command -v qdbus || command -v qdbus6)"
-                "$qd" org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
-                    "var allDesktops = desktops();
-                    for (var i = 0; i < allDesktops.length; i++) {
-                        var d = allDesktops[i];
-                        d.wallpaperPlugin = 'org.kde.image';
-                        d.currentConfigGroup = ['Wallpaper','org.kde.image','General'];
-                        d.writeConfig('Image', 'file://$img');
-                    }" 2>/dev/null && applied=0
-            fi
-            if [[ $applied -ne 0 ]] && command -v plasma-apply-wallpaperimage &>/dev/null; then
-                plasma-apply-wallpaperimage "$img" 2>/dev/null && applied=0
-            fi ;;
-        xfce)
-            if command -v xfconf-query &>/dev/null; then
-                local prop
-                while IFS= read -r prop; do
-                    xfconf-query -c xfce4-desktop -p "$prop" -s "$img" 2>/dev/null && applied=0
-                done < <(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E "last-image$" || true)
-            fi ;;
-        lxqt)
-            command -v pcmanfm-qt &>/dev/null && \
-                pcmanfm-qt --set-wallpaper "$img" --wallpaper-mode=zoom 2>/dev/null && applied=0 ;;
-        lxde)
-            command -v pcmanfm &>/dev/null && \
-                pcmanfm --set-wallpaper "$img" --wallpaper-mode=fit 2>/dev/null && applied=0 ;;
-        sway)
-            command -v swaymsg &>/dev/null && \
-                swaymsg "output * bg '$img' fill" &>/dev/null && applied=0 ;;
-        hyprland)
-            if command -v hyprctl &>/dev/null && pgrep -x hyprpaper &>/dev/null; then
-                hyprctl hyprpaper preload "$img" &>/dev/null && \
-                hyprctl hyprpaper wallpaper ",$img" &>/dev/null && applied=0
-            fi ;;
-    esac
-    if [[ $applied -ne 0 ]]; then
-        if [[ -n "${WAYLAND_DISPLAY:-}" || "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
-            if command -v swww &>/dev/null; then
-                if ! pgrep -x swww-daemon &>/dev/null; then
-                    (setsid swww-daemon &>/dev/null &)
-                    sleep 0.5
-                fi
-                swww img "$img" 2>/dev/null && applied=0
-            fi
-            if [[ $applied -ne 0 ]] && command -v swaybg &>/dev/null; then
-                pkill -x swaybg 2>/dev/null || true
-                (setsid swaybg -i "$img" -m fill &>/dev/null &) && applied=0
-            fi
-            if [[ $applied -ne 0 ]] && command -v wbg &>/dev/null; then
-                pkill -x wbg 2>/dev/null || true
-                (setsid wbg "$img" &>/dev/null &) && applied=0
-            fi
-        fi
-        if [[ $applied -ne 0 && -n "${DISPLAY:-}" ]]; then
-            if command -v feh &>/dev/null; then
-                feh --bg-fill "$img" 2>/dev/null && applied=0
-            elif command -v nitrogen &>/dev/null; then
-                nitrogen --set-zoom-fill "$img" 2>/dev/null && applied=0
-            elif command -v xwallpaper &>/dev/null; then
-                xwallpaper --zoom "$img" 2>/dev/null && applied=0
-            fi
-        fi
-        if [[ $applied -ne 0 ]] && command -v gsettings &>/dev/null; then
-            gsettings set org.gnome.desktop.background picture-uri "file://$img" 2>/dev/null && applied=0
-            gsettings set org.gnome.desktop.background picture-uri-dark "file://$img" 2>/dev/null || true
-        fi
-    fi
-    if [[ $applied -eq 0 ]]; then
-        log info "Wallpaper applied via: $env (${XDG_SESSION_TYPE:-unknown} session)"
-        [[ -t 1 ]] && echo "✔ Applied to desktop via: $env"
-        # Record successful update time
-        date +%s > "$LAST_CHANGE_FILE" 2>/dev/null || true
-        systemctl --user restart spotlight.timer lockscreen.timer 2>/dev/null || true
-        return 0
-    else
-        log warning "Could not apply wallpaper (env: $env, session: ${XDG_SESSION_TYPE:-unknown}) — image saved at $img"
-        [[ -t 1 ]] && echo "⚠ Could not apply to desktop (detected env: $env, session: ${XDG_SESSION_TYPE:-unknown}) — image saved at $img" >&2
-        return 1
-    fi
-}
+rm -f "$SPOTLIGHT_PATH/predownloaded" 2>/dev/null || true
 
 ensure_dbus_session || true
 export GSETTINGS_BACKEND=dconf
