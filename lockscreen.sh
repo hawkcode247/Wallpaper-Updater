@@ -45,6 +45,7 @@ SOURCES=(spotlight bing nasa wallhaven picsum)
 SOURCE="${LOCKSCREEN_SOURCE:-random}"
 FALLBACK="${LOCKSCREEN_FALLBACK:-1}"
 FORCE=0
+INTERVAL_MIN="${LOCKSCREEN_INTERVAL_MIN:-240}"
 
 SPOTLIGHT_API="https://fd.api.iris.microsoft.com/v4/api/selection?placement=88000820&fmt=json&locale=en-US&country=US"
 BING_API="https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=en-US"
@@ -274,15 +275,15 @@ detect_screen_size() {
     SCREEN_W=0; SCREEN_H=0
     local out=""
     if [[ -n "${DISPLAY:-}" ]] && command -v xrandr &>/dev/null; then
-        out="$(xrandr --current 2>/dev/null | sed -n 's/.* connected.* \([0-9]\+\)x\([0-9]\+\)+.*/\1 \2/p' | sort -rn | head -1)"
+        out="$(xrandr --current 2>/dev/null | sed -n 's/.* connected.* \([0-9]\+\)x\([0-9]\+\)+.*/\1 \2/p' | sort -rn | head -1)" || true
         [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
     if (( SCREEN_W == 0 )) && [[ -n "${DISPLAY:-}" ]] && command -v xdpyinfo &>/dev/null; then
-        out="$(xdpyinfo 2>/dev/null | sed -n 's/.*dimensions:[[:space:]]*\([0-9]\+\)x\([0-9]\+\) pixels.*/\1 \2/p' | head -1)"
+        out="$(xdpyinfo 2>/dev/null | sed -n 's/.*dimensions:[[:space:]]*\([0-9]\+\)x\([0-9]\+\) pixels.*/\1 \2/p' | head -1)" || true
         [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
     if (( SCREEN_W == 0 )) && [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wlr-randr &>/dev/null; then
-        out="$(wlr-randr 2>/dev/null | sed -n 's/^[[:space:]]*\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p' | sort -rn | head -1)"
+        out="$(wlr-randr 2>/dev/null | sed -n 's/^[[:space:]]*\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p' | sort -rn | head -1)" || true
         [[ -n "$out" ]] && read -r SCREEN_W SCREEN_H <<< "$out"
     fi
     if (( SCREEN_W == 0 )) && command -v swaymsg &>/dev/null; then
@@ -297,7 +298,7 @@ detect_screen_size() {
         local f
         for f in /sys/class/drm/*/modes; do
             [[ -r "$f" ]] || continue
-            out="$(head -1 "$f" 2>/dev/null | sed -n 's/^\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p')"
+            out="$(head -1 "$f" 2>/dev/null | sed -n 's/^\([0-9]\+\)x\([0-9]\+\).*/\1 \2/p')" || true
             [[ -n "$out" ]] && { read -r SCREEN_W SCREEN_H <<< "$out"; break; }
         done
     fi
@@ -687,7 +688,13 @@ run_update() {
         FORCE=1
     fi
     LAST_CHANGE_FILE="$USER_IMG_DIR/last_change"
-    INTERVAL_LIMIT=14400 # 4 hours in seconds
+    # interval (minutes) — may come from $XDG_CONFIG/lockscreen/config
+    if [[ -f "$XDG_CONFIG/lockscreen/config" ]]; then
+        while IFS='=' read -r _k _v; do
+            [[ "$_k" == "INTERVAL_MIN" && "$_v" =~ ^[0-9]+$ && "$_v" -ge 1 ]] && INTERVAL_MIN="$_v"
+        done < "$XDG_CONFIG/lockscreen/config"
+    fi
+    INTERVAL_LIMIT=$(( INTERVAL_MIN * 60 )) # seconds
     if [[ "$FORCE" == "0" && -f "$LAST_CHANGE_FILE" && -f "$IMG_PATH" ]]; then
         last_time="$(cat "$LAST_CHANGE_FILE" 2>/dev/null || echo 0)"
         if [[ "$last_time" =~ ^[0-9]+$ ]]; then
@@ -734,6 +741,7 @@ run_update() {
     apply_lockscreen "$IMG_PATH" || warn "no known lock-screen mechanism found — image is ready at $IMG_PATH"
     echo "Lock screen updated [$used]: $IMG_PATH ($(image_resolution "$IMG_PATH"))"
     # Record successful update time
+    mkdir -p "$(dirname "$LAST_CHANGE_FILE")" 2>/dev/null || true
     date +%s > "$LAST_CHANGE_FILE" 2>/dev/null || true
     systemctl --user restart lockscreen.timer spotlight.timer 2>/dev/null || true
 }
