@@ -337,12 +337,6 @@ Deepin · Pantheon · Sway · Hyprland · i3/openbox (via feh/nitrogen/xwallpape
 
 **Sessions:** X11 & Wayland · **Init:** systemd timers (or cron fallback)
 
-## 🛠 Building from source
-
-`wallpaper-suite.sh` ships with both scripts and the systemd units embedded —
-it **is** the source and the build. Edit the embedded `spotlight.sh` / `lockscreen.sh` and
-re-embed them (base64) into the suite if you fork the project.
-
 <a id="donate"></a>
 
 ## ❤️ Support the project
